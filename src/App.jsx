@@ -15,37 +15,19 @@ const C = {
 
 const SENDER_EMAIL = "hadley.yoas@kellyservices.com";
 
-// ─── Sample data ──────────────────────────────────────────────────────────────
-const INIT_JOBS=[
-  {id:1,title:"Software Engineer",level:"Junior"},
-  {id:2,title:"Software Engineer",level:"Mid"},
-  {id:3,title:"Software Engineer",level:"Senior"},
-  {id:4,title:"Project Manager",level:"Mid"},
-  {id:5,title:"Project Manager",level:"Senior"},
-  {id:6,title:"Business Analyst",level:"Junior"},
-  {id:7,title:"Business Analyst",level:"Senior"},
-];
-const INIT_LOCS=["Chicago, IL","New York, NY","Dallas, TX","Remote"];
-const INIT_SUPPLIERS=[
-  {id:1,name:"Apex Staffing",  contact:"sarah@apexstaff.com", status:"responded",sentAt:"2025-06-01",respondedAt:"2025-06-03"},
-  {id:2,name:"TalentBridge",   contact:"mark@talentbridge.com",status:"sent",    sentAt:"2025-06-01",respondedAt:null},
-  {id:3,name:"ProSource Group",contact:"linda@prosource.com",  status:"responded",sentAt:"2025-06-01",respondedAt:"2025-06-04"},
-  {id:4,name:"EliteForce",     contact:"james@eliteforce.com", status:"not_sent", sentAt:null,respondedAt:null},
-  {id:5,name:"PeakHire",       contact:"anna@peakhire.com",    status:"sent",    sentAt:"2025-06-02",respondedAt:null},
-  {id:6,name:"CoreStaff",      contact:"tom@corestaff.com",    status:"follow_up",sentAt:"2025-06-01",respondedAt:null},
-];
-const INIT_RESPONSES=[
-  {supplier:"Apex Staffing",  title:"Software Engineer",level:"Mid",   location:"Chicago, IL",  billRate:95, payRate:72},
-  {supplier:"Apex Staffing",  title:"Software Engineer",level:"Senior",location:"Chicago, IL",  billRate:130,payRate:98},
-  {supplier:"Apex Staffing",  title:"Project Manager",  level:"Senior",location:"New York, NY", billRate:145,payRate:110},
-  {supplier:"Apex Staffing",  title:"Business Analyst", level:"Junior",location:"Remote",       billRate:65, payRate:50},
-  {supplier:"ProSource Group",title:"Software Engineer",level:"Mid",   location:"Chicago, IL",  billRate:88, payRate:68},
-  {supplier:"ProSource Group",title:"Software Engineer",level:"Senior",location:"Chicago, IL",  billRate:125,payRate:95},
-  {supplier:"ProSource Group",title:"Project Manager",  level:"Senior",location:"New York, NY", billRate:138,payRate:105},
-  {supplier:"ProSource Group",title:"Business Analyst", level:"Junior",location:"Remote",       billRate:70, payRate:52},
-  {supplier:"TalentBridge",   title:"Software Engineer",level:"Senior",location:"Chicago, IL",  billRate:165,payRate:118},
-  {supplier:"TalentBridge",   title:"Project Manager",  level:"Senior",location:"New York, NY", billRate:195,payRate:145},
-];
+// ─── localStorage persistence ────────────────────────────────────────────────
+const LS_KEY = "supplierrate_v1";
+
+function lsLoad(){
+  try{
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : {projects:[],projectData:{}};
+  }catch{ return {projects:[],projectData:{}}; }
+}
+
+function lsSave(data){
+  try{ localStorage.setItem(LS_KEY,JSON.stringify(data)); }catch(e){ console.warn("localStorage save failed",e); }
+}
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function avg(arr){return arr.length?Math.round(arr.reduce((a,b)=>a+b,0)/arr.length):0;}
@@ -208,9 +190,40 @@ function TemplateBuilder({jobs,setJobs,locations,setLocations}){
   const [newTitle,setNewTitle]=useState("");
   const [newLevel,setNewLevel]=useState("Mid");
   const [newLoc,setNewLoc]=useState("");
-  const [generating,setGenerating]=useState(false);
-  const [preview,setPreview]=useState("");
   const [importMsg,setImportMsg]=useState("");
+  const DEFAULT_TEMPLATE=`Dear Supplier Partner,
+
+[CLIENT NAME] is partnering with KellyOCG to conduct a Market Rate Analysis across multiple geographies, and your participation has been requested.
+
+Your response will contribute to a broader benchmarking initiative designed to reflect current local market conditions and competitive pay practices. KellyOCG is managing this effort on behalf of [CLIENT NAME].
+
+Please follow these guidelines when completing the attached country-specific survey template:
+
+  • Complete all green shaded fields at the top of the worksheet:
+      • Supplier Name
+      • Point of Contact (Name)
+      • Email Address
+  • Provide responses only for roles and locations your organization actively supports
+  • Submit one competitive hourly pay and/or bill rate for a highly qualified candidate (no ranges)
+  • If you are unfamiliar with a job title or geography, leave the row blank
+  • Enter all rates in local currency
+  • Do not modify job titles, structure, or formatting
+
+Please return your completed survey(s) to:
+Ratecards@kellyocg.com
+
+Deadline
+All responses must be submitted by:
+[DEADLINE DATE] (Close of Business EST)
+
+Questions
+If you have any questions or need assistance, please contact ratecards@kellyocg.com or your [CLIENT NAME] program representative.
+
+Thank you for your time and partnership. Your input is critical to ensuring [CLIENT NAME] maintains a competitive and market-aligned contingent workforce program.
+
+Kind regards,
+KellyOCG MRA Team`;
+  const [preview,setPreview]=useState(DEFAULT_TEMPLATE);
 
   const levels=["Junior","Mid","Senior","Lead","Principal","Manager","Director"];
 
@@ -235,42 +248,55 @@ function TemplateBuilder({jobs,setJobs,locations,setLocations}){
         const wb=XLSX.read(e.target.result,{type:"binary"});
         const ws=wb.Sheets[wb.SheetNames[0]];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-        let tc=-1,lc=-1,loc=-1,hr=-1;
-        for(let r=0;r<Math.min(6,rows.length);r++){
+        // Scan up to row 20 to skip instruction blocks at top of KellyOCG template
+        let titleCol=-1,locCol=-1,levelCol=-1,headerRow=-1;
+        for(let r=0;r<Math.min(20,rows.length);r++){
           const row=rows[r].map(v=>String(v).toLowerCase().trim());
-          const ti=row.findIndex(c=>c.includes("title")||c.includes("role")||c.includes("job"));
-          if(ti>=0){tc=ti;lc=row.findIndex(c=>c.includes("level")||c.includes("grade"));loc=row.findIndex(c=>c.includes("location")||c.includes("city"));hr=r;break;}
+          const ti=row.findIndex(c=>c.includes("job title")||c.includes("title")||c.includes("role"));
+          if(ti>=0){
+            titleCol=ti;
+            locCol=row.findIndex(c=>c.includes("location")||c.includes("city")||c.includes("region"));
+            levelCol=row.findIndex(c=>c.includes("level")&&!c.includes("title"));
+            headerRow=r;
+            break;
+          }
         }
-        if(tc<0){setImportMsg("⚠️ Couldn't find a Title/Role column.");return;}
-        const newJobs=[];const newLocs=new Set();
-        for(let r=hr+1;r<rows.length;r++){
+        if(titleCol<0){setImportMsg("⚠️ Couldn't find a Job Title column.");return;}
+        const newJobs=[];
+        const newLocs=new Set();
+        const seenKeys=new Set();
+        for(let r=headerRow+1;r<rows.length;r++){
           const row=rows[r];
-          const title=String(row[tc]||"").trim();
-          if(!title)continue;
-          const level=lc>=0?String(row[lc]||"").trim():"Mid";
-          newJobs.push({id:Date.now()+r,title,level});
-          if(loc>=0&&row[loc])newLocs.add(String(row[loc]).trim());
+          const rawTitle=String(row[titleCol]||"").trim();
+          if(!rawTitle)continue;
+          // Parse level from embedded title e.g. "Commercial Officer - Level 4"
+          let title=rawTitle;
+          let level="";
+          const lvlMatch=rawTitle.match(/\s*[-–]\s*(level\s*\d+|[A-Za-z]+\s*\d*)$/i);
+          if(lvlMatch){
+            level=lvlMatch[1].trim();
+            title=rawTitle.slice(0,rawTitle.length-lvlMatch[0].length).trim();
+          } else if(levelCol>=0&&row[levelCol]){
+            level=String(row[levelCol]).trim();
+          }
+          const key=title+"||"+level;
+          if(!seenKeys.has(key)){
+            seenKeys.add(key);
+            newJobs.push({id:Date.now()+r+Math.random(),title,level});
+          }
+          if(locCol>=0&&row[locCol]) newLocs.add(String(row[locCol]).trim());
         }
         if(!newJobs.length){setImportMsg("⚠️ No role rows found.");return;}
         setJobs(newJobs);
         if(newLocs.size)setLocations([...newLocs]);
-        setImportMsg(`✅ Imported ${newJobs.length} roles${newLocs.size?` and ${newLocs.size} locations`:""}`);
-      }catch{setImportMsg("⚠️ Error reading file.");}
+        setImportMsg("✅ Imported "+newJobs.length+" unique roles"+(newLocs.size?" and "+newLocs.size+" locations":""));
+      }catch(err){setImportMsg("⚠️ Error reading file: "+err.message);}
     };
     reader.readAsBinaryString(file);
   }
 
-  async function generateTemplate(){
-    setGenerating(true);setPreview("");
-    try{
-      const text = await callClaude(`Write a professional supplier rate survey email.
-Roles (title + level): ${jobs.map(j=>`${j.title} - ${j.level}`).join(", ")}.
-Locations: ${locations.join(", ")}.
-Ask them to fill in hourly bill and pay rates per role per location.
-Concise, friendly. Placeholders: [SUPPLIER NAME], [YOUR NAME].`);
-      setPreview(text);
-    }catch{setPreview("Error generating. Please try again.");}
-    setGenerating(false);
+  function resetTemplate(){
+    setPreview(DEFAULT_TEMPLATE);
   }
 
   const grouped=jobs.reduce((acc,j)=>{if(!acc[j.title])acc[j.title]=[];acc[j.title].push(j);return acc;},{});
@@ -324,19 +350,17 @@ Concise, friendly. Placeholders: [SUPPLIER NAME], [YOUR NAME].`);
       <div style={{display:"flex",flexDirection:"column",gap:16}}>
         <Card style={{flex:1}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-            <div style={{fontWeight:700,fontSize:15,color:C.navy}}>✉️ Email Template Preview</div>
-            <Btn onClick={generateTemplate} variant="mint" size="sm" disabled={generating}>{generating?"Generating…":"Generate with AI"}</Btn>
-          </div>
-          {preview?(
-            <textarea value={preview} onChange={e=>setPreview(e.target.value)}
-              style={{width:"100%",minHeight:300,border:`1px solid ${C.border}`,borderRadius:8,padding:12,fontSize:13,color:C.text,lineHeight:1.6,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
-          ):(
-            <div style={{minHeight:300,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:C.textMuted,fontSize:14,gap:8,border:`2px dashed ${C.border}`,borderRadius:8}}>
-              <span style={{fontSize:32}}>✨</span>
-              <span>Click "Generate with AI" to draft your survey email</span>
-              <span style={{fontSize:12}}>{jobs.length} roles · {locations.length} locations configured</span>
+            <div>
+              <div style={{fontWeight:700,fontSize:15,color:C.navy}}>✉️ Outreach Email Template</div>
+              <div style={{fontSize:12,color:C.textMuted,marginTop:2}}>Edit directly — this is the body used when drafting supplier emails</div>
             </div>
-          )}
+            <Btn onClick={resetTemplate} variant="ghost" size="sm">Reset to Default</Btn>
+          </div>
+          <textarea value={preview} onChange={e=>setPreview(e.target.value)}
+            style={{width:"100%",minHeight:320,border:`1px solid ${C.border}`,borderRadius:8,padding:12,fontSize:13,color:C.text,lineHeight:1.6,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <Btn size="sm" variant="mint" onClick={()=>navigator.clipboard?.writeText(preview)}>Copy to Clipboard</Btn>
+          </div>
         </Card>
         <Card>
           <div style={{fontWeight:700,fontSize:15,color:C.navy,marginBottom:12}}>📊 Survey Grid Preview</div>
@@ -704,15 +728,16 @@ function DataEntry({responses,setResponses,suppliers}){
         const ws=wb.Sheets[wb.SheetNames[0]];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
         let cols={title:-1,level:-1,location:-1,bill:-1,pay:-1};let hr=-1;
-        for(let r=0;r<Math.min(8,rows.length);r++){
+        // Scan up to row 20 to handle KellyOCG format with instruction rows at top
+        for(let r=0;r<Math.min(20,rows.length);r++){
           const row=rows[r].map(v=>String(v).toLowerCase().trim());
-          const ti=row.findIndex(c=>c.includes("title")||c.includes("role")||c.includes("job")||c.includes("position"));
+          const ti=row.findIndex(c=>c.includes("job title")||c.includes("title")||c.includes("role")||c.includes("position"));
           if(ti>=0){
             cols.title=ti;
-            cols.level=row.findIndex(c=>c.includes("level")||c.includes("grade")||c.includes("tier")||c.includes("category"));
+            cols.level=row.findIndex(c=>c.includes("level")&&!c.includes("title"));
             cols.location=row.findIndex(c=>c.includes("location")||c.includes("city")||c.includes("region")||c.includes("market"));
             cols.bill=row.findIndex(c=>c.includes("bill")||c.includes("markup")||c.includes("charge")||c.includes("client"));
-            cols.pay=row.findIndex(c=>c.includes("pay")||c.includes("cost")||c.includes("wage")||c.includes("salary")||c.includes("worker"));
+            cols.pay=row.findIndex(c=>c.includes("pay")||c.includes("cost")||c.includes("wage")||c.includes("salary")||c.includes("worker")||c.includes("feedback"));
             hr=r;break;
           }
         }
@@ -720,15 +745,21 @@ function DataEntry({responses,setResponses,suppliers}){
         const parsed=[];
         for(let r=hr+1;r<rows.length;r++){
           const row=rows[r];
-          const title=String(row[cols.title]||"").trim();
-          if(!title)continue;
-          parsed.push({
-            supplier:selectedSupplier,title,
-            level:cols.level>=0?String(row[cols.level]||"").trim():"",
-            location:cols.location>=0?String(row[cols.location]||"").trim():"",
-            billRate:cols.bill>=0?parseFloat(String(row[cols.bill]).replace(/[^0-9.]/g,""))||0:0,
-            payRate:cols.pay>=0?parseFloat(String(row[cols.pay]).replace(/[^0-9.]/g,""))||0:0,
-          });
+          const rawTitle=String(row[cols.title]||"").trim();
+          if(!rawTitle)continue;
+          // Parse embedded level from title e.g. "Commercial Officer - Level 4"
+          let title=rawTitle;
+          let level=cols.level>=0?String(row[cols.level]||"").trim():"";
+          if(!level){
+            const lvlMatch=rawTitle.match(/\s*[-–]\s*(level\s*\d+|[A-Za-z]+\s*\d*)$/i);
+            if(lvlMatch){level=lvlMatch[1].trim();title=rawTitle.slice(0,rawTitle.length-lvlMatch[0].length).trim();}
+          }
+          const location=cols.location>=0?String(row[cols.location]||"").trim():"";
+          const payRate=cols.pay>=0?parseFloat(String(row[cols.pay]).replace(/[^0-9.]/g,""))||0:0;
+          const billRate=cols.bill>=0?parseFloat(String(row[cols.bill]).replace(/[^0-9.]/g,""))||0:0;
+          // Only include rows that have at least one rate filled in
+          if(!payRate&&!billRate)continue;
+          parsed.push({supplier:selectedSupplier,title,level,location,billRate,payRate});
         }
         if(!parsed.length){setImportMsg("⚠️ No data rows found.");return;}
         setPreview(parsed);
@@ -1138,6 +1169,83 @@ Use specific dollar amounts and supplier names throughout.`, 1200);
   );
 }
 
+// ─── PROJECT SELECTOR ────────────────────────────────────────────────────────
+function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,loading}){
+  const [newName,setNewName]=useState("");
+  const [newClient,setNewClient]=useState("");
+  const [creating,setCreating]=useState(false);
+
+  function handleCreate(){
+    if(!newName.trim())return;
+    onCreate(newName.trim(),newClient.trim());
+    setNewName("");setNewClient("");setCreating(false);
+  }
+
+  return(
+    <div style={{minHeight:"100vh",background:"#F0F4F9",fontFamily:"'Inter',system-ui,sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{width:"100%",maxWidth:600}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{fontSize:32,marginBottom:8}}>⚡</div>
+          <div style={{fontSize:24,fontWeight:800,color:C.navy,letterSpacing:-0.5}}>SupplierRate</div>
+          <div style={{fontSize:14,color:C.textMuted,marginTop:4}}>Rate Survey Management · Kelly Services MRA</div>
+        </div>
+
+        <Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <div style={{fontWeight:700,fontSize:16,color:C.navy}}>Your Survey Projects</div>
+            <Btn variant="sky" size="sm" onClick={()=>setCreating(!creating)}>+ New Project</Btn>
+          </div>
+
+          {creating&&(
+            <div style={{background:C.skyLight,borderRadius:10,padding:16,marginBottom:16,display:"flex",flexDirection:"column",gap:10}}>
+              <Input label="Project Name" value={newName} onChange={setNewName} placeholder="e.g. Intel Q3 2026 Rate Survey"/>
+              <Input label="Client Name (optional)" value={newClient} onChange={setNewClient} placeholder="e.g. Intel"/>
+              <div style={{display:"flex",gap:8}}>
+                <Btn variant="sky" onClick={handleCreate} disabled={!newName.trim()}>Create Project</Btn>
+                <Btn variant="ghost" size="sm" onClick={()=>setCreating(false)}>Cancel</Btn>
+              </div>
+            </div>
+          )}
+
+          {loading?(
+            <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>Loading projects…</div>
+          ):projects.length===0?(
+            <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>
+              <div style={{fontSize:32,marginBottom:8}}>📁</div>
+              No projects yet — create your first one above
+            </div>
+          ):(
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {projects.map(p=>(
+                <div key={p.id} style={{
+                  display:"flex",alignItems:"center",justifyContent:"space-between",
+                  background:activeId===p.id?C.navy:C.slateLight,
+                  borderRadius:9,padding:"12px 16px",cursor:"pointer",
+                  transition:"background .15s",
+                }} onClick={()=>onSelect(p.id)}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14,color:activeId===p.id?C.white:C.text}}>{p.name}</div>
+                    <div style={{fontSize:11,color:activeId===p.id?"#93C5FD":C.textMuted,marginTop:2}}>
+                      {p.client_name&&`Client: ${p.client_name} · `}Created {new Date(p.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <Btn size="sm" variant={activeId===p.id?"ghost":"sky"} onClick={e=>{e.stopPropagation();onSelect(p.id);}}>
+                      {activeId===p.id?"✓ Active":"Open"}
+                    </Btn>
+                    <button onClick={e=>{e.stopPropagation();if(window.confirm("Delete this project and all its data? This cannot be undone."))onDelete(p.id);}}
+                      style={{background:"none",border:"none",color:activeId===p.id?"#FC8181":C.rose,cursor:"pointer",fontSize:16,padding:"2px 6px"}}>×</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 const TABS=[
   {id:"template",label:"Template Builder",icon:"📋"},
@@ -1148,10 +1256,90 @@ const TABS=[
 
 export default function App(){
   const [tab,setTab]=useState("template");
-  const [jobs,setJobs]=useState(INIT_JOBS);
-  const [locations,setLocations]=useState(INIT_LOCS);
-  const [suppliers,setSuppliers]=useState(INIT_SUPPLIERS);
-  const [responses,setResponses]=useState(INIT_RESPONSES);
+  const [showProjects,setShowProjects]=useState(false);
+
+  // ── Bootstrap from localStorage ──
+  const [store,setStoreRaw]=useState(()=>lsLoad());
+
+  function setStore(fn){
+    setStoreRaw(prev=>{
+      const next=typeof fn==="function"?fn(prev):fn;
+      lsSave(next);
+      return next;
+    });
+  }
+
+  const projects=store.projects||[];
+  const [activeProjectId,setActiveProjectId]=useState(()=>{
+    const s=lsLoad();
+    return s.projects&&s.projects.length>0?s.projects[0].id:null;
+  });
+
+  const activeProject=projects.find(p=>p.id===activeProjectId)||null;
+  const pd=store.projectData||{};
+  const pdata=pd[activeProjectId]||{jobs:[],locations:[],suppliers:[],responses:[]};
+
+  const jobs=pdata.jobs||[];
+  const locations=pdata.locations||[];
+  const suppliers=pdata.suppliers||[];
+  const responses=pdata.responses||[];
+
+  function updateProjectData(pid,fn){
+    setStore(prev=>{
+      const existing=prev.projectData||{};
+      const current=existing[pid]||{jobs:[],locations:[],suppliers:[],responses:[]};
+      const next=typeof fn==="function"?fn(current):fn;
+      return {...prev,projectData:{...existing,[pid]:next}};
+    });
+  }
+
+  function setJobs(fn){
+    if(!activeProjectId)return;
+    updateProjectData(activeProjectId,cur=>({...cur,jobs:typeof fn==="function"?fn(cur.jobs||[]):fn}));
+  }
+  function setLocations(fn){
+    if(!activeProjectId)return;
+    updateProjectData(activeProjectId,cur=>({...cur,locations:typeof fn==="function"?fn(cur.locations||[]):fn}));
+  }
+  function setSuppliers(fn){
+    if(!activeProjectId)return;
+    updateProjectData(activeProjectId,cur=>({...cur,suppliers:typeof fn==="function"?fn(cur.suppliers||[]):fn}));
+  }
+  function setResponses(fn){
+    if(!activeProjectId)return;
+    updateProjectData(activeProjectId,cur=>({...cur,responses:typeof fn==="function"?fn(cur.responses||[]):fn}));
+  }
+
+  function handleSelectProject(pid){
+    setActiveProjectId(pid);
+    setShowProjects(false);
+    setTab("template");
+  }
+
+  function handleCreateProject(name,clientName){
+    const newP={id:Date.now().toString(),name,client_name:clientName||null,created_at:new Date().toISOString()};
+    setStore(prev=>({
+      ...prev,
+      projects:[newP,...(prev.projects||[])],
+      projectData:{...(prev.projectData||{}),[newP.id]:{jobs:[],locations:[],suppliers:[],responses:[]}},
+    }));
+    setActiveProjectId(newP.id);
+    setShowProjects(false);
+    setTab("template");
+  }
+
+  function handleDeleteProject(pid){
+    setStore(prev=>{
+      const projects=(prev.projects||[]).filter(p=>p.id!==pid);
+      const projectData={...(prev.projectData||{})};
+      delete projectData[pid];
+      return {...prev,projects,projectData};
+    });
+    if(activeProjectId===pid){
+      const remaining=(store.projects||[]).filter(p=>p.id!==pid);
+      setActiveProjectId(remaining.length>0?remaining[0].id:null);
+    }
+  }
 
   const respondedCount=suppliers.filter(s=>s.status==="responded").length;
   const partialCount=suppliers.filter(s=>s.status==="responded").filter(s=>{
@@ -1159,19 +1347,31 @@ export default function App(){
     return c.pct<100&&c.pct>0;
   }).length;
 
+  if(!activeProjectId||showProjects){
+    return <ProjectSelector
+      projects={projects} activeId={activeProjectId}
+      onSelect={handleSelectProject} onCreate={handleCreateProject}
+      onDelete={handleDeleteProject} loading={false}/>;
+  }
+
   return(
     <div style={{minHeight:"100vh",background:"#F0F4F9",fontFamily:"'Inter',system-ui,sans-serif",color:C.text}}>
       <div style={{background:C.navy,padding:"0 32px"}}>
         <div style={{maxWidth:1160,margin:"0 auto"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 0 0"}}>
-            <div>
-              <div style={{color:C.white,fontSize:20,fontWeight:800,letterSpacing:-0.5}}>⚡ SupplierRate</div>
-              <div style={{color:"#93C5FD",fontSize:12,marginTop:1}}>Rate Survey Management · Kelly Services MRA</div>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <button onClick={()=>setShowProjects(true)} style={{background:"rgba(255,255,255,.1)",border:"none",borderRadius:7,padding:"6px 10px",cursor:"pointer",color:"#93C5FD",fontSize:12}}>← Projects</button>
+              <div>
+                <div style={{color:C.white,fontSize:18,fontWeight:800,letterSpacing:-0.5}}>⚡ {activeProject?.name||"SupplierRate"}</div>
+                <div style={{color:"#93C5FD",fontSize:11,marginTop:1}}>
+                  {activeProject?.client_name?"Client: "+activeProject.client_name+" · ":""}Kelly Services MRA
+                </div>
+              </div>
             </div>
             <div style={{display:"flex",gap:16,alignItems:"center"}}>
-              {partialCount>0&&<span style={{fontSize:12,color:C.amber,fontWeight:600}}>⚠️ {partialCount} partial response{partialCount!==1?"s":""}</span>}
+              {partialCount>0&&<span style={{fontSize:12,color:C.amber,fontWeight:600}}>⚠️ {partialCount} partial</span>}
               <span style={{fontSize:12,color:"#93C5FD"}}>{respondedCount}/{suppliers.length} responded · {responses.length} records</span>
-              <span style={{fontSize:11,color:"#6EE7B7",background:"rgba(45,189,142,.15)",padding:"3px 10px",borderRadius:99}}>📧 Outlook Connected</span>
+              <span style={{fontSize:11,color:"#6EE7B7",background:"rgba(45,189,142,.15)",padding:"3px 10px",borderRadius:99}}>💾 Auto-saved</span>
             </div>
           </div>
           <div style={{display:"flex",gap:2,marginTop:16}}>
