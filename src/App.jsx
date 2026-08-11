@@ -1068,13 +1068,15 @@ function Analytics({responses,suppliers,jobs,locations}){
     ?locFiltered.filter(r=>!outlierKeySet.has(`${r.supplier}|${r.title}|${r.level}|${r.location}`))
     :locFiltered;
 
-  const roles=[...new Set(workingData.map(r=>`${r.title} – ${r.level}`))];
-  const summaries=roles.map(role=>{
-    const [title,level]=role.split(" – ");
+  // Use title+level as unique key but display title only (level shown separately)
+  const roleKeys2=[...new Set(workingData.map(r=>r.title+"|||"+r.level))];
+  const summaries=roleKeys2.map(key=>{
+    const [title,level]=key.split("|||");
+    const role=title+(level?" – "+level:"");
     const recs=workingData.filter(r=>r.title===title&&r.level===level);
     const bills=recs.map(r=>r.billRate).filter(Boolean);
     const pays=recs.map(r=>r.payRate).filter(Boolean);
-    return{role,responses:recs.length,
+    return{role,title,level,responses:recs.length,
       billAvg:avg(bills),billMin:bills.length?Math.min(...bills):0,billMax:bills.length?Math.max(...bills):0,
       payAvg:avg(pays),payMin:pays.length?Math.min(...pays):0,payMax:pays.length?Math.max(...pays):0,
       spread:bills.length?Math.max(...bills)-Math.min(...bills):0,
@@ -1082,16 +1084,99 @@ function Analytics({responses,suppliers,jobs,locations}){
   }).sort((a,b)=>b.billAvg-a.billAvg);
 
   function exportCSV(){
-    const headers=["Supplier","Job Title","Level","Location","Bill Rate","Pay Rate","Bill Outlier","Pay Outlier"];
-    const rows=locFiltered.map(r=>{
-      const k=`${r.supplier}|${r.title}|${r.level}|${r.location}`;
-      const od=outlierDetails.find(o=>`${o.supplier}|${o.title}|${o.level}|${o.location}`===k);
-      return[r.supplier,r.title,r.level,r.location,r.billRate,r.payRate,od?.billOutlier?"Yes":"No",od?.payOutlier?"Yes":"No"];
+    const esc=v=>`"${String(v??'').replace(/"/g,'""')}"`;
+    const row=(...vals)=>vals.map(esc).join(",")+",,,";
+    const blank=()=>"";
+    const lines=[];
+    const now=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+
+    // ── SECTION 1: Summary Header ──
+    lines.push(esc("KellyOCG MRA Rate Survey — Analytics Export")+",,,,,,,");
+    lines.push(esc("Exported: "+now)+",,,,,,,");
+    lines.push(esc("Location Filter: "+filterLoc)+",,,,,,,");
+    lines.push(esc("Outliers: "+(excludeOutliers?"Excluded":"Included"))+",,,,,,,");
+    lines.push(blank());
+
+    // ── SECTION 2: Rate Summary by Role ──
+    lines.push(esc("RATE SUMMARY BY ROLE")+",,,,,,,");
+    lines.push([
+      esc("Job Title"),esc("Level"),esc("# Responses"),
+      esc("Bill Rate Avg"),esc("Bill Rate Min"),esc("Bill Rate Max"),
+      esc("Pay Rate Avg"),esc("Pay Rate Min"),esc("Pay Rate Max"),
+      esc("Spread"),
+    ].join(","));
+    summaries.forEach(s=>{
+      lines.push([
+        esc(s.title||s.role),esc(s.level||""),esc(s.responses),
+        esc("$"+s.billAvg),esc("$"+s.billMin),esc("$"+s.billMax),
+        esc("$"+s.payAvg),esc("$"+s.payMin),esc("$"+s.payMax),
+        esc("$"+s.spread),
+      ].join(","));
     });
-    const csv=[headers,...rows].map(r=>r.map(v=>`"${v}"`).join(",")).join("\n");
+    lines.push(blank());
+
+    // ── SECTION 3: Supplier Comparison ──
+    lines.push(esc("SUPPLIER COMPARISON")+",,,,,,,");
+    lines.push([
+      esc("Supplier"),esc("Avg Bill Rate"),esc("Avg Pay Rate"),
+      esc("Avg Markup %"),esc("# Records"),esc("Outlier Count"),
+    ].join(","));
+    const supplierNames=[...new Set(responses.map(r=>r.supplier))];
+    supplierNames.forEach(sup=>{
+      const recs=locFiltered.filter(r=>r.supplier===sup);
+      const ab=avg(recs.map(r=>r.billRate));
+      const ap=avg(recs.map(r=>r.payRate));
+      const markup=ap>0?Math.round(((ab-ap)/ap)*100):0;
+      const oc=outlierDetails.filter(o=>o.supplier===sup).length;
+      lines.push([
+        esc(sup),esc("$"+ab+"/hr"),esc("$"+ap+"/hr"),
+        esc(markup+"%"),esc(recs.length),esc(oc),
+      ].join(","));
+    });
+    lines.push(blank());
+
+    // ── SECTION 4: Outlier Detail ──
+    if(outlierDetails.length>0){
+      lines.push(esc("OUTLIER DETAIL (±1.5 SD from group mean)")+",,,,,,,");
+      lines.push([
+        esc("Supplier"),esc("Job Title"),esc("Level"),esc("Location"),
+        esc("Bill Rate"),esc("Bill Rate Group Avg"),esc("Bill Outlier"),
+        esc("Pay Rate"),esc("Pay Rate Group Avg"),esc("Pay Outlier"),
+      ].join(","));
+      outlierDetails.forEach(o=>{
+        lines.push([
+          esc(o.supplier),esc(o.title),esc(o.level),esc(o.location),
+          esc("$"+o.billRate),esc("$"+o.avgBill),esc(o.billOutlier?"YES":""),
+          esc("$"+o.payRate),esc("$"+o.avgPay),esc(o.payOutlier?"YES":""),
+        ].join(","));
+      });
+      lines.push(blank());
+    }
+
+    // ── SECTION 5: Raw Response Data ──
+    lines.push(esc("RAW RESPONSE DATA")+",,,,,,,");
+    lines.push([
+      esc("Supplier"),esc("Job Title"),esc("Level"),esc("Location"),
+      esc("Bill Rate ($/hr)"),esc("Pay Rate ($/hr)"),
+      esc("Bill Outlier"),esc("Pay Outlier"),
+    ].join(","));
+    locFiltered.forEach(r=>{
+      const k=r.supplier+"|"+r.title+"|"+r.level+"|"+r.location;
+      const od=outlierDetails.find(o=>o.supplier+"|"+o.title+"|"+o.level+"|"+o.location===k);
+      lines.push([
+        esc(r.supplier),esc(r.title),esc(r.level),esc(r.location),
+        esc(r.billRate),esc(r.payRate),
+        esc(od?.billOutlier?"Yes":"No"),esc(od?.payOutlier?"Yes":"No"),
+      ].join(","));
+    });
+
+    const csv=lines.join("\n");
     const blob=new Blob([csv],{type:"text/csv"});
     const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");a.href=url;a.download="supplier_rates_analysis.csv";a.click();
+    const a=document.createElement("a");
+    a.href=url;
+    a.download="KellyOCG_MRA_Rate_Survey_Analytics_"+now.replace(/[, ]+/g,"_")+".csv";
+    a.click();
     URL.revokeObjectURL(url);
   }
 
