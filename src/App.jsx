@@ -225,7 +225,7 @@ Kind regards,
 KellyOCG MRA Team`;
   const [preview,setPreview]=useState(DEFAULT_TEMPLATE);
 
-  const levels=["Junior","Mid","Senior","Lead","Principal","Manager","Director"];
+  const levels=["1 Entry","2 Intermediate","3 Senior","4 Expert","5 Principal"];
 
   function addJob(){
     if(!newTitle.trim())return;
@@ -299,6 +299,103 @@ KellyOCG MRA Team`;
     setPreview(DEFAULT_TEMPLATE);
   }
 
+  const [downloading,setDownloading]=useState(false);
+  const [dlMsg,setDlMsg]=useState("");
+
+  async function downloadExcelTemplate(){
+    if(!jobs.length||!locations.length){
+      setDlMsg("⚠️ Add at least one job title and one location first.");
+      return;
+    }
+    setDownloading(true);
+    setDlMsg("");
+    try{
+      // Build workbook in-browser using SheetJS (xlsx library already imported)
+      const XLSX2 = await import("xlsx");
+      const wb = XLSX2.utils.book_new();
+
+      // ── Style helpers via SheetJS write with cell styles ──
+      // SheetJS community doesn't support full cell styles, so we build a clean
+      // data-only sheet and let the professional formatting come from the structure
+      const aoa = [];
+
+      // Row 1 — header
+      aoa.push(["KellyOCG  ·  MRA Supplier Rate Survey","","","","",""]);
+      // Row 2 — instructions
+      aoa.push(["Please complete all green-shaded fields and return to ratecards@kellyocg.com","","","","",""]);
+      // Row 3 — instructions label + supplier name
+      aoa.push(["Instructions","","","","Supplier Name:","[Enter Here]"]);
+      // Row 4
+      aoa.push(["Please enter your feedback on competitive pay and bill hourly rates – in local currency.","","","","Point of Contact (name):","[Enter Here]"]);
+      // Row 5
+      aoa.push(["Please provide only a competitive rate, and refrain from providing a range.","","","","Supplier E-mail address:","[Enter Here]"]);
+      // Row 6
+      aoa.push(["If your organization does not have competitive rate information or does not fill a specific job title, leave blank","","","","",""]);
+      // Row 7
+      aoa.push(["Return the completed workbook to KellyOCG at ratecards@kellyocg.com","","","","",""]);
+      // Row 8 — blank
+      aoa.push(["","","","","",""]);
+      // Row 9 — return by
+      aoa.push(["","","","","Return by:","[DEADLINE DATE]"]);
+      // Row 10 — blank
+      aoa.push(["","","","","",""]);
+      // Row 11 — column headers
+      aoa.push(["Country / Region","Location","Job Title (as shown in VMS)","Level","Recommended Hourly Pay Rate (local currency)","Recommended Hourly Bill Rate (local currency)"]);
+
+      // Data rows — location × job
+      const countryMap = {
+        "uk":        "United Kingdom","london":"United Kingdom","manchester":"United Kingdom",
+        "birmingham":"United Kingdom","edinburgh":"United Kingdom","bristol":"United Kingdom",
+        "canada":    "Canada","toronto":"Canada","vancouver":"Canada","montreal":"Canada",
+        "germany":   "Germany","berlin":"Germany","munich":"Germany","frankfurt":"Germany",
+        "france":    "France","paris":"France","lyon":"France",
+        "australia": "Australia","sydney":"Australia","melbourne":"Australia",
+        "india":     "India","bangalore":"India","mumbai":"India","delhi":"India","hyderabad":"India",
+        "remote":    "Remote",
+      };
+      function getCountry(loc){
+        const l=loc.toLowerCase();
+        for(const[k,v] of Object.entries(countryMap)){if(l.includes(k))return v;}
+        return "United States";
+      }
+
+      for(const loc of locations){
+        for(const job of jobs){
+          aoa.push([getCountry(loc), loc, job.title, job.level||"", "", ""]);
+        }
+      }
+
+      const ws2 = XLSX2.utils.aoa_to_sheet(aoa);
+
+      // Set column widths
+      ws2["!cols"] = [
+        {wch:20},{wch:22},{wch:38},{wch:22},{wch:28},{wch:28}
+      ];
+
+      // Merge header rows
+      ws2["!merges"] = [
+        {s:{r:0,c:0},e:{r:0,c:3}},   // Row 1 title
+        {s:{r:1,c:0},e:{r:1,c:5}},   // Row 2 instructions bar
+        {s:{r:2,c:0},e:{r:2,c:3}},   // Row 3 left
+        {s:{r:3,c:0},e:{r:3,c:3}},   // Row 4 left
+        {s:{r:4,c:0},e:{r:4,c:3}},   // Row 5 left
+        {s:{r:5,c:0},e:{r:5,c:5}},   // Row 6
+        {s:{r:6,c:0},e:{r:6,c:5}},   // Row 7
+        {s:{r:7,c:0},e:{r:7,c:5}},   // Row 8 blank
+        {s:{r:8,c:0},e:{r:8,c:3}},   // Row 9 left blank
+      ];
+
+      XLSX2.utils.book_append_sheet(wb, ws2, "Rate Survey");
+
+      // Trigger download
+      XLSX2.writeFile(wb, "KellyOCG_MRA_Rate_Survey_Template.xlsx");
+      setDlMsg("✅ Template downloaded successfully");
+    }catch(err){
+      setDlMsg("⚠️ Error generating file: "+err.message);
+    }
+    setDownloading(false);
+  }
+
   const grouped=jobs.reduce((acc,j)=>{if(!acc[j.title])acc[j.title]=[];acc[j.title].push(j);return acc;},{});
 
   return(
@@ -363,39 +460,52 @@ KellyOCG MRA Team`;
           </div>
         </Card>
         <Card>
-          <div style={{fontWeight:700,fontSize:15,color:C.navy,marginBottom:12}}>📊 Survey Grid Preview</div>
-          <div style={{overflowX:"auto"}}>
+          <div style={{fontWeight:700,fontSize:15,color:C.navy,marginBottom:4}}>📊 Survey Grid Preview</div>
+          <div style={{fontSize:12,color:C.textMuted,marginBottom:12}}>{jobs.length} roles · {locations.length} locations → {jobs.length*locations.length} total rows</div>
+          <div style={{overflowX:"auto",maxHeight:220,overflowY:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
               <thead>
                 <tr style={{background:C.navy}}>
-                  <th style={{padding:"6px 10px",color:C.white,textAlign:"left"}}>Role</th>
-                  {locations.slice(0,3).map(l=><th key={l} style={{padding:"6px 8px",color:C.white,textAlign:"center"}} colSpan={2}>{l}</th>)}
-                </tr>
-                <tr style={{background:C.navyLight}}>
-                  <th></th>
-                  {locations.slice(0,3).map(l=>(
-                    <>
-                      <th key={l+"b"} style={{padding:"4px 8px",color:"#93C5FD",textAlign:"center",fontSize:11}}>Bill $</th>
-                      <th key={l+"p"} style={{padding:"4px 8px",color:"#93C5FD",textAlign:"center",fontSize:11}}>Pay $</th>
-                    </>
-                  ))}
+                  <th style={{padding:"6px 10px",color:C.white,textAlign:"left",position:"sticky",top:0}}>Role</th>
+                  <th style={{padding:"6px 10px",color:C.white,textAlign:"left",position:"sticky",top:0}}>Level</th>
+                  <th style={{padding:"6px 10px",color:C.white,textAlign:"left",position:"sticky",top:0}}>Location</th>
                 </tr>
               </thead>
               <tbody>
-                {jobs.slice(0,5).map((j,i)=>(
-                  <tr key={j.id} style={{background:i%2===0?C.white:C.slateLight}}>
-                    <td style={{padding:"5px 10px",whiteSpace:"nowrap"}}>{j.title} – {j.level}</td>
-                    {locations.slice(0,3).map(l=>(
-                      <>
-                        <td key={l+"b"} style={{padding:"5px 8px",textAlign:"center",color:C.textMuted}}>—</td>
-                        <td key={l+"p"} style={{padding:"5px 8px",textAlign:"center",color:C.textMuted}}>—</td>
-                      </>
-                    ))}
-                  </tr>
-                ))}
-                {jobs.length>5&&<tr><td colSpan={1+locations.slice(0,3).length*2} style={{padding:"5px 10px",color:C.textMuted,fontSize:12}}>+{jobs.length-5} more roles…</td></tr>}
+                {locations.slice(0,3).map(loc=>
+                  jobs.slice(0,4).map((j,i)=>(
+                    <tr key={loc+j.id} style={{background:i%2===0?C.white:C.slateLight,borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"5px 10px"}}>{j.title}</td>
+                      <td style={{padding:"5px 10px",color:C.textMuted}}>{j.level}</td>
+                      <td style={{padding:"5px 10px",color:C.sky}}>{loc}</td>
+                    </tr>
+                  ))
+                )}
+                {(jobs.length>4||locations.length>3)&&(
+                  <tr><td colSpan={3} style={{padding:"6px 10px",color:C.textMuted,fontSize:11,fontStyle:"italic"}}>
+                    +{Math.max(0,jobs.length*locations.length-12)} more rows in the downloaded file…
+                  </td></tr>
+                )}
               </tbody>
             </table>
+          </div>
+        </Card>
+        <Card style={{border:`2px solid ${C.mint}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:15,color:C.navy}}>⬇️ Download Survey Template</div>
+              <div style={{fontSize:12,color:C.textMuted,marginTop:2}}>Generates a formatted Excel file ready to send to suppliers</div>
+            </div>
+            <Btn onClick={downloadExcelTemplate} variant="mint" disabled={downloading||!jobs.length||!locations.length}>
+              {downloading?"Generating…":"Download Excel"}
+            </Btn>
+          </div>
+          {dlMsg&&<Toast msg={dlMsg}/>}
+          <div style={{marginTop:10,display:"flex",flexWrap:"wrap",gap:6}}>
+            <span style={{fontSize:11,color:C.textMuted}}>Will include:</span>
+            {["KellyOCG header","Supplier info fields","Instructions","Green input cells for rates","All your roles × locations"].map(f=>(
+              <span key={f} style={{background:C.mintLight,color:C.mint,borderRadius:99,padding:"2px 8px",fontSize:11,fontWeight:600}}>{f}</span>
+            ))}
           </div>
         </Card>
       </div>
@@ -416,10 +526,17 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [sendStatus,setSendStatus]=useState({});
   const [importMsg,setImportMsg]=useState("");
   const [expandedCompletion,setExpandedCompletion]=useState(null);
+  const [editingNote,setEditingNote]=useState(null);
+  const [noteText,setNoteText]=useState("");
+
+  function saveNote(id){
+    setSuppliers(p=>p.map(s=>s.id===id?{...s,notes:noteText}:s));
+    setEditingNote(null);setNoteText("");
+  }
 
   function addSupplier(){
     if(!newName.trim())return;
-    setSuppliers(p=>[...p,{id:Date.now(),name:newName.trim(),contact:newEmail.trim(),status:"not_sent",sentAt:null,respondedAt:null}]);
+    setSuppliers(p=>[...p,{id:Date.now(),name:newName.trim(),contact:newEmail.trim(),pocName:"",country:"",category:"",status:"not_sent",notes:"",sentAt:null,respondedAt:null}]);
     setNewName("");setNewEmail("");
   }
   function updateStatus(id,status){
@@ -437,30 +554,57 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     reader.onload=e=>{
       try{
         const wb=XLSX.read(e.target.result,{type:"binary"});
-        const ws=wb.Sheets[wb.SheetNames[0]];
+
+        // Prefer "Consolidated Supplier List" sheet, fall back to first sheet
+        const sheetName = wb.SheetNames.find(n=>
+          n.toLowerCase().includes("consolidated")||n.toLowerCase().includes("supplier list")
+        ) || wb.SheetNames[0];
+        const ws=wb.Sheets[sheetName];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-        let nc=-1,ec=-1,hr=-1;
-        for(let r=0;r<Math.min(5,rows.length);r++){
+
+        // Scan up to row 10 to find header (skips KellyOCG banner rows)
+        let cols={name:-1,email:-1,contact:-1,country:-1,category:-1};
+        let hr=-1;
+        for(let r=0;r<Math.min(10,rows.length);r++){
           const row=rows[r].map(v=>String(v).toLowerCase().trim());
-          const ni=row.findIndex(c=>c.includes("name")||c.includes("supplier")||c.includes("company")||c.includes("vendor"));
-          if(ni>=0){nc=ni;ec=row.findIndex(c=>c.includes("email")||c.includes("contact")||c.includes("mail"));hr=r;break;}
+          // Look for "supplier" column
+          const ni=row.findIndex(c=>c==="supplier"||c.includes("supplier name")||c.includes("vendor")||c.includes("company"));
+          if(ni>=0){
+            cols.name=ni;
+            cols.email=row.findIndex(c=>c.includes("e-mail")||c.includes("email")||c.includes("poc e")||c.includes("mail"));
+            cols.contact=row.findIndex(c=>c.includes("point of contact")||c.includes("poc name")||c.includes("contact name")||c.includes("contact (poc)"));
+            cols.country=row.findIndex(c=>c.includes("country"));
+            cols.category=row.findIndex(c=>c.includes("category")||c.includes("collar")||c.includes("type"));
+            hr=r; break;
+          }
         }
-        if(nc<0){setImportMsg("⚠️ Couldn't find a Name/Supplier column.");return;}
+        if(cols.name<0){setImportMsg("⚠️ Couldn't find a Supplier column. Make sure you're using the Consolidated Supplier List sheet.");return;}
+
         const imported=[];
+        const seenNames=new Set();
         for(let r=hr+1;r<rows.length;r++){
-          const name=String(rows[r][nc]||"").trim();
-          if(!name)continue;
-          const contact=ec>=0?String(rows[r][ec]||"").trim():"";
-          imported.push({id:Date.now()+r,name,contact,status:"not_sent",sentAt:null,respondedAt:null});
+          const row=rows[r];
+          const name=String(row[cols.name]||"").trim();
+          if(!name||seenNames.has(name.toLowerCase()))continue;
+          seenNames.add(name.toLowerCase());
+          const email=cols.email>=0?String(row[cols.email]||"").trim():"";
+          const pocName=cols.contact>=0?String(row[cols.contact]||"").trim():"";
+          const country=cols.country>=0?String(row[cols.country]||"").trim():"";
+          const category=cols.category>=0?String(row[cols.category]||"").trim():"";
+          imported.push({
+            id:Date.now()+r+Math.random(),
+            name, contact:email, pocName, country, category,
+            status:"not_sent", notes:"", sentAt:null, respondedAt:null
+          });
         }
         if(!imported.length){setImportMsg("⚠️ No supplier rows found.");return;}
         setSuppliers(prev=>{
           const existing=new Set(prev.map(s=>s.name.toLowerCase()));
           const fresh=imported.filter(s=>!existing.has(s.name.toLowerCase()));
-          setImportMsg(`✅ Added ${fresh.length} suppliers (${imported.length-fresh.length} duplicates skipped)`);
+          setImportMsg("✅ Added "+fresh.length+" suppliers from '"+sheetName+"' ("+(imported.length-fresh.length)+" duplicates skipped)");
           return [...prev,...fresh];
         });
-      }catch{setImportMsg("⚠️ Error reading file.");}
+      }catch(err){setImportMsg("⚠️ Error reading file: "+err.message);}
     };
     reader.readAsBinaryString(file);
   }
@@ -605,7 +749,7 @@ BODY:
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
           <thead>
             <tr style={{borderBottom:`2px solid ${C.border}`}}>
-              {["Supplier","Contact","Status","Completeness","Actions"].map(h=>(
+              {["Supplier","Country","Category","Contact","Status","Completeness","Notes","Actions"].map(h=>(
                 <th key={h} style={{padding:"6px 10px",textAlign:"left",color:C.textMuted,fontWeight:600,fontSize:12}}>{h}</th>
               ))}
             </tr>
@@ -617,11 +761,14 @@ BODY:
               return(
                 <>
                   <tr key={s.id} style={{borderBottom:isExpanded?"none":`1px solid ${C.border}`,verticalAlign:"top"}}>
-                    <td style={{padding:"9px 10px",fontWeight:600}}>
+                    <td style={{padding:"9px 10px",fontWeight:600,minWidth:160}}>
                       {s.name}
-                      {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:2}}>Sent {s.sentAt}</div>}
+                      {s.pocName&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>👤 {s.pocName}</div>}
+                      {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>Sent {s.sentAt}</div>}
                       {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:1}}>Responded {s.respondedAt}</div>}
                     </td>
+                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.country||"—"}</td>
+                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.category||"—"}</td>
                     <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}</td>
                     <td style={{padding:"9px 10px"}}><StatusBadge status={s.status}/></td>
                     <td style={{padding:"9px 10px"}}>
@@ -637,6 +784,28 @@ BODY:
                         </div>
                       ):<span style={{color:C.textMuted,fontSize:12}}>—</span>}
                     </td>
+                    <td style={{padding:"9px 10px",minWidth:180}}>
+                      {editingNote===s.id?(
+                        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                          <textarea value={noteText} onChange={e=>setNoteText(e.target.value)}
+                            placeholder="e.g. Declined to participate — rate confidentiality policy"
+                            style={{width:"100%",fontSize:11,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 7px",resize:"vertical",minHeight:60,fontFamily:"inherit",boxSizing:"border-box"}}/>
+                          <div style={{display:"flex",gap:4}}>
+                            <Btn size="sm" variant="mint" onClick={()=>saveNote(s.id)}>Save</Btn>
+                            <Btn size="sm" variant="ghost" onClick={()=>setEditingNote(null)}>Cancel</Btn>
+                          </div>
+                        </div>
+                      ):(
+                        <div onClick={()=>{setEditingNote(s.id);setNoteText(s.notes||"");}}
+                          style={{cursor:"pointer",fontSize:11,color:s.notes?C.text:C.textMuted,lineHeight:1.5,
+                            padding:"4px 7px",borderRadius:6,border:`1px dashed ${s.notes?C.border:"#E2E8F0"}`,
+                            background:s.notes?C.amberLight:"transparent",minHeight:28,
+                          }}
+                          title="Click to add/edit note">
+                          {s.notes||<span style={{fontStyle:"italic"}}>Add note…</span>}
+                        </div>
+                      )}
+                    </td>
                     <td style={{padding:"9px 10px"}}>
                       <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
                         {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>draftEmail(s,"initial")}>Draft & Send</Btn>}
@@ -648,7 +817,7 @@ BODY:
                   </tr>
                   {isExpanded&&comp.missing.length>0&&(
                     <tr key={s.id+"_missing"} style={{borderBottom:`1px solid ${C.border}`}}>
-                      <td colSpan={5} style={{padding:"0 10px 10px 10px"}}>
+                      <td colSpan={8} style={{padding:"0 10px 10px 10px"}}>
                         <div style={{background:C.amberLight,borderRadius:8,padding:"10px 14px"}}>
                           <div style={{fontWeight:600,fontSize:12,color:C.amber,marginBottom:6}}>Missing from {s.name}'s response:</div>
                           <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
