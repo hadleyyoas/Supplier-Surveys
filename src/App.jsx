@@ -1039,8 +1039,6 @@ function DataEntry({responses,setResponses,suppliers}){
 function Analytics({responses,suppliers,jobs,locations}){
   const [filterLoc,setFilterLoc]=useState("All");
   const [excludeOutliers,setExcludeOutliers]=useState(false);
-  const [aiInsight,setAiInsight]=useState("");
-  const [loading,setLoading]=useState(false);
   const [showOutliers,setShowOutliers]=useState(false);
 
   const locs=["All",...new Set(responses.map(r=>r.location))];
@@ -1180,39 +1178,7 @@ function Analytics({responses,suppliers,jobs,locations}){
     URL.revokeObjectURL(url);
   }
 
-  async function getInsights(){
-    setLoading(true);setAiInsight("");
-    const outlierSummary=outlierDetails.map(o=>
-      `${o.supplier}: ${o.title} ${o.level}${o.location?` (${o.location})`:""}` +
-      (o.billOutlier?` bill=$${o.billRate} vs avg $${o.avgBill}`:"") +
-      (o.payOutlier?` pay=$${o.payRate} vs avg $${o.avgPay}`:"")
-    ).join("; ");
 
-    // Build completeness summary for context
-    const compSummary=suppliers.filter(s=>s.status==="responded").map(s=>{
-      const c=completeness(s.name,responses,jobs,locations);
-      return `${s.name}: ${c.pct}% complete (${c.filled}/${c.expected} roles)${c.missing.length?`, missing: ${c.missing.slice(0,3).join(", ")}${c.missing.length>3?"…":""}` : ""}`;
-    }).join("; ");
-
-    try{
-      const text = await callClaude(`Analyze this supplier rate survey data. Write 4-5 concise insights as plain paragraphs — no bullet points, no headers, no bold.
-
-Rate summaries by role: ${JSON.stringify(summaries)}
-Outlier details: ${outlierSummary||"None detected"}
-Response completeness: ${compSummary||"N/A"}
-
-Focus on:
-1. Named outliers — supplier, role, exact rate vs group average
-2. Roles with widest spreads, which suppliers are at the extremes
-3. Any suppliers with incomplete responses and what they're missing
-4. Negotiation leverage opportunities
-5. Any notable patterns
-
-Use specific dollar amounts and supplier names throughout.`, 1200);
-      setAiInsight(text);
-    }catch{setAiInsight("Could not load insights.");}
-    setLoading(false);
-  }
 
   return(
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
@@ -1308,7 +1274,7 @@ Use specific dollar amounts and supplier names throughout.`, 1200);
             <tbody>
               {summaries.map((s,i)=>(
                 <tr key={s.role} style={{background:i%2===0?C.white:C.slateLight,borderBottom:`1px solid ${C.border}`}}>
-                  <td style={{padding:"8px 12px",fontWeight:600}}>{s.role}</td>
+                  <td style={{padding:"8px 12px",fontWeight:600}}>{s.title||s.role}</td>
                   <td style={{padding:"8px 8px",textAlign:"center",color:C.textMuted}}>{s.responses}</td>
                   <td style={{padding:"8px 8px",textAlign:"center",fontWeight:700,color:C.sky}}>${s.billAvg}</td>
                   <td style={{padding:"8px 8px",textAlign:"center",color:C.textMuted}}>${s.billMin}</td>
@@ -1328,21 +1294,6 @@ Use specific dollar amounts and supplier names throughout.`, 1200);
             </tbody>
           </table>
         </div>
-      </Card>
-
-      <Card style={{border:`2px solid ${C.skyLight}`}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div style={{fontWeight:700,fontSize:15,color:C.navy}}>✨ AI Rate Insights</div>
-          <Btn onClick={getInsights} variant="sky" size="sm" disabled={loading}>{loading?"Analyzing…":"Analyze Data"}</Btn>
-        </div>
-        {aiInsight?(
-          <div style={{fontSize:13,color:C.text,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{aiInsight}</div>
-        ):(
-          <div style={{color:C.textMuted,fontSize:13,lineHeight:1.6}}>
-            Click "Analyze Data" for AI insights — named outliers with supplier and dollar values, completeness gaps, spreads, and negotiation opportunities.
-            {outlierDetails.length>0&&<span style={{color:C.amber}}> {outlierDetails.length} outlier(s) flagged.</span>}
-          </div>
-        )}
       </Card>
 
       <Card>
