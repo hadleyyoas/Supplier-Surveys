@@ -845,17 +845,32 @@ function DataEntry({responses,setResponses,suppliers}){
         const wb=XLSX.read(e.target.result,{type:"binary"});
         const ws=wb.Sheets[wb.SheetNames[0]];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-        let cols={title:-1,level:-1,location:-1,bill:-1,pay:-1};let hr=-1;
+        let cols={title:-1,level:-1,location:-1,country:-1,bill:-1,pay:-1};let hr=-1;
         // Scan up to row 20 to handle KellyOCG format with instruction rows at top
+        // Normalize cell values: collapse newlines and extra spaces for matching
         for(let r=0;r<Math.min(20,rows.length);r++){
-          const row=rows[r].map(v=>String(v).toLowerCase().trim());
-          const ti=row.findIndex(c=>c.includes("job title")||c.includes("title")||c.includes("role")||c.includes("position"));
+          const row=rows[r].map(v=>String(v).toLowerCase().replace(/\n/g," ").replace(/\s+/g," ").trim());
+          // Must be a SHORT cell containing "job title" — not an instruction sentence
+          // A header cell will be short (< 60 chars) and contain "job title" or similar
+          const ti=row.findIndex(c=>{
+            if(c.length>80) return false; // skip long instruction sentences
+            return c.includes("job title")||(c.includes("title")&&!c.includes("leave blank")&&!c.includes("please")&&!c.includes("does not"))||c==="role"||c==="position";
+          });
           if(ti>=0){
             cols.title=ti;
-            cols.level=row.findIndex(c=>c.includes("level")&&!c.includes("title"));
-            cols.location=row.findIndex(c=>c.includes("location")||c.includes("city")||c.includes("region")||c.includes("market"));
-            cols.bill=row.findIndex(c=>c.includes("bill")||c.includes("markup")||c.includes("charge")||c.includes("client"));
-            cols.pay=row.findIndex(c=>c.includes("pay")||c.includes("cost")||c.includes("wage")||c.includes("salary")||c.includes("worker")||c.includes("feedback"));
+            // Level: short cell containing "level" but not the title col
+            cols.level=row.findIndex((c,i)=>i!==ti&&c.length<40&&(c==="level"||c.includes("level"))&&!c.includes("title"));
+            // Location: prefer "location" column over "country/region"
+            const strictLoc=row.findIndex(c=>c.length<40&&(c==="location"||c.includes("location")||c.includes("city")));
+            const looseLoc=row.findIndex(c=>c.length<40&&(c.includes("region")||c.includes("country")));
+            cols.location=strictLoc>=0?strictLoc:looseLoc;
+            // Also track country column separately for context
+            cols.country=row.findIndex(c=>c.length<40&&(c.includes("country")||c.includes("region")));
+            // Bill rate: must contain "bill"
+            cols.bill=row.findIndex(c=>c.includes("bill"));
+            // Pay rate: contains "pay" but not "bill"
+            cols.pay=row.findIndex(c=>c.includes("pay")&&!c.includes("bill"));
+            if(cols.pay<0) cols.pay=row.findIndex(c=>c.includes("wage")||c.includes("salary")||c.includes("cost rate"));
             hr=r;break;
           }
         }
@@ -875,9 +890,12 @@ function DataEntry({responses,setResponses,suppliers}){
           const location=cols.location>=0?String(row[cols.location]||"").trim():"";
           const payRate=cols.pay>=0?parseFloat(String(row[cols.pay]).replace(/[^0-9.]/g,""))||0:0;
           const billRate=cols.bill>=0?parseFloat(String(row[cols.bill]).replace(/[^0-9.]/g,""))||0:0;
-          // Only include rows that have at least one rate filled in
-          if(!payRate&&!billRate)continue;
-          parsed.push({supplier:selectedSupplier,title,level,location,billRate,payRate});
+          // Include rows that have a title — rate can be 0 (supplier may fill in later)
+          // Use location col if found, otherwise fall back to country col
+          const locVal=cols.location>=0?String(row[cols.location]||"").trim():"";
+          const countryVal=cols.country>=0&&cols.country!==cols.location?String(row[cols.country]||"").trim():"";
+          const finalLocation=locVal||(countryVal?"":location);
+          parsed.push({supplier:selectedSupplier,title,level,location:finalLocation||location,billRate,payRate});
         }
         if(!parsed.length){setImportMsg("⚠️ No data rows found.");return;}
         setPreview(parsed);
