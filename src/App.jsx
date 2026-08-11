@@ -270,6 +270,7 @@ KellyOCG MRA Team`;
           const rawTitle=String(row[titleCol]||"").trim();
           if(!rawTitle)continue;
           // Parse level from embedded title e.g. "Commercial Officer - Level 4"
+          // fullTitle = original string as-is (used in Excel output)
           let title=rawTitle;
           let level="";
           const lvlMatch=rawTitle.match(/\s*[-–]\s*(level\s*\d+|[A-Za-z]+\s*\d*)$/i);
@@ -279,10 +280,10 @@ KellyOCG MRA Team`;
           } else if(levelCol>=0&&row[levelCol]){
             level=String(row[levelCol]).trim();
           }
-          const key=title+"||"+level;
+          const key=rawTitle+"||"+level;
           if(!seenKeys.has(key)){
             seenKeys.add(key);
-            newJobs.push({id:Date.now()+r+Math.random(),title,level});
+            newJobs.push({id:Date.now()+r+Math.random(),title,level,fullTitle:rawTitle});
           }
           if(locCol>=0&&row[locCol]) newLocs.add(String(row[locCol]).trim());
         }
@@ -310,88 +311,25 @@ KellyOCG MRA Team`;
     setDownloading(true);
     setDlMsg("");
     try{
-      // Build workbook in-browser using SheetJS (xlsx library already imported)
-      const XLSX2 = await import("xlsx");
-      const wb = XLSX2.utils.book_new();
-
-      // ── Style helpers via SheetJS write with cell styles ──
-      // SheetJS community doesn't support full cell styles, so we build a clean
-      // data-only sheet and let the professional formatting come from the structure
-      const aoa = [];
-
-      // Row 1 — header
-      aoa.push(["KellyOCG  ·  MRA Supplier Rate Survey","","","","",""]);
-      // Row 2 — instructions
-      aoa.push(["Please complete all green-shaded fields and return to ratecards@kellyocg.com","","","","",""]);
-      // Row 3 — instructions label + supplier name
-      aoa.push(["Instructions","","","","Supplier Name:","[Enter Here]"]);
-      // Row 4
-      aoa.push(["Please enter your feedback on competitive pay and bill hourly rates – in local currency.","","","","Point of Contact (name):","[Enter Here]"]);
-      // Row 5
-      aoa.push(["Please provide only a competitive rate, and refrain from providing a range.","","","","Supplier E-mail address:","[Enter Here]"]);
-      // Row 6
-      aoa.push(["If your organization does not have competitive rate information or does not fill a specific job title, leave blank","","","","",""]);
-      // Row 7
-      aoa.push(["Return the completed workbook to KellyOCG at ratecards@kellyocg.com","","","","",""]);
-      // Row 8 — blank
-      aoa.push(["","","","","",""]);
-      // Row 9 — return by
-      aoa.push(["","","","","Return by:","[DEADLINE DATE]"]);
-      // Row 10 — blank
-      aoa.push(["","","","","",""]);
-      // Row 11 — column headers
-      aoa.push(["Country / Region","Location","Job Title (as shown in VMS)","Level","Recommended Hourly Pay Rate (local currency)","Recommended Hourly Bill Rate (local currency)"]);
-
-      // Data rows — location × job
-      const countryMap = {
-        "uk":        "United Kingdom","london":"United Kingdom","manchester":"United Kingdom",
-        "birmingham":"United Kingdom","edinburgh":"United Kingdom","bristol":"United Kingdom",
-        "canada":    "Canada","toronto":"Canada","vancouver":"Canada","montreal":"Canada",
-        "germany":   "Germany","berlin":"Germany","munich":"Germany","frankfurt":"Germany",
-        "france":    "France","paris":"France","lyon":"France",
-        "australia": "Australia","sydney":"Australia","melbourne":"Australia",
-        "india":     "India","bangalore":"India","mumbai":"India","delhi":"India","hyderabad":"India",
-        "remote":    "Remote",
-      };
-      function getCountry(loc){
-        const l=loc.toLowerCase();
-        for(const[k,v] of Object.entries(countryMap)){if(l.includes(k))return v;}
-        return "United States";
+      const res=await fetch("/api/generate-template",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({jobs,locations,clientName:"[CLIENT NAME]",deadline:"[DEADLINE DATE]"}),
+      });
+      if(!res.ok){
+        const err=await res.json().catch(()=>({error:"Unknown error"}));
+        throw new Error(err.error||"Server error");
       }
-
-      for(const loc of locations){
-        for(const job of jobs){
-          aoa.push([getCountry(loc), loc, job.title, job.level||"", "", ""]);
-        }
-      }
-
-      const ws2 = XLSX2.utils.aoa_to_sheet(aoa);
-
-      // Set column widths
-      ws2["!cols"] = [
-        {wch:20},{wch:22},{wch:38},{wch:22},{wch:28},{wch:28}
-      ];
-
-      // Merge header rows
-      ws2["!merges"] = [
-        {s:{r:0,c:0},e:{r:0,c:3}},   // Row 1 title
-        {s:{r:1,c:0},e:{r:1,c:5}},   // Row 2 instructions bar
-        {s:{r:2,c:0},e:{r:2,c:3}},   // Row 3 left
-        {s:{r:3,c:0},e:{r:3,c:3}},   // Row 4 left
-        {s:{r:4,c:0},e:{r:4,c:3}},   // Row 5 left
-        {s:{r:5,c:0},e:{r:5,c:5}},   // Row 6
-        {s:{r:6,c:0},e:{r:6,c:5}},   // Row 7
-        {s:{r:7,c:0},e:{r:7,c:5}},   // Row 8 blank
-        {s:{r:8,c:0},e:{r:8,c:3}},   // Row 9 left blank
-      ];
-
-      XLSX2.utils.book_append_sheet(wb, ws2, "Rate Survey");
-
-      // Trigger download
-      XLSX2.writeFile(wb, "KellyOCG_MRA_Rate_Survey_Template.xlsx");
-      setDlMsg("✅ Template downloaded successfully");
+      const blob=await res.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");
+      a.href=url;
+      a.download="KellyOCG_MRA_Rate_Survey_Template.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+      setDlMsg("✅ Formatted template downloaded successfully");
     }catch(err){
-      setDlMsg("⚠️ Error generating file: "+err.message);
+      setDlMsg("⚠️ Error: "+err.message+". Make sure the app is deployed on Vercel.");
     }
     setDownloading(false);
   }
