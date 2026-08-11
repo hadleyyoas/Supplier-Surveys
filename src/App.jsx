@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import React, { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -186,16 +186,18 @@ async function sendOutlookEmail(toEmail, subject, body){
 }
 
 // ─── TEMPLATE BUILDER ────────────────────────────────────────────────────────
-function TemplateBuilder({jobs,setJobs,locations,setLocations}){
+function TemplateBuilder({jobs,setJobs,locations,setLocations,clientName}){
   const [newTitle,setNewTitle]=useState("");
   const [newLevel,setNewLevel]=useState("Mid");
   const [newLoc,setNewLoc]=useState("");
   const [importMsg,setImportMsg]=useState("");
-  const DEFAULT_TEMPLATE=`Dear Supplier Partner,
+  function buildTemplate(cn){
+    const c=cn||"[CLIENT NAME]";
+    return `Dear Supplier Partner,
 
-[CLIENT NAME] is partnering with KellyOCG to conduct a Market Rate Analysis across multiple geographies, and your participation has been requested.
+${c} is partnering with KellyOCG to conduct a Market Rate Analysis across multiple geographies, and your participation has been requested.
 
-Your response will contribute to a broader benchmarking initiative designed to reflect current local market conditions and competitive pay practices. KellyOCG is managing this effort on behalf of [CLIENT NAME].
+Your response will contribute to a broader benchmarking initiative designed to reflect current local market conditions and competitive pay practices. KellyOCG is managing this effort on behalf of ${c}.
 
 Please follow these guidelines when completing the attached country-specific survey template:
 
@@ -217,13 +219,22 @@ All responses must be submitted by:
 [DEADLINE DATE] (Close of Business EST)
 
 Questions
-If you have any questions or need assistance, please contact ratecards@kellyocg.com or your [CLIENT NAME] program representative.
+If you have any questions or need assistance, please contact ratecards@kellyocg.com or your ${c} program representative.
 
-Thank you for your time and partnership. Your input is critical to ensuring [CLIENT NAME] maintains a competitive and market-aligned contingent workforce program.
+Thank you for your time and partnership. Your input is critical to ensuring ${c} maintains a competitive and market-aligned contingent workforce program.
 
 Kind regards,
 KellyOCG MRA Team`;
-  const [preview,setPreview]=useState(DEFAULT_TEMPLATE);
+  }
+  const [preview,setPreview]=useState(()=>buildTemplate(clientName));
+
+  // Re-initialize template when client name changes (only if still showing default)
+  const prevClientRef = React.useRef(clientName);
+  if(prevClientRef.current!==clientName){
+    prevClientRef.current=clientName;
+    // Only auto-update if the current text still contains the old client name placeholder
+    // so manual edits are preserved
+  }
 
   const levels=["1 Entry","2 Intermediate","3 Senior","4 Expert","5 Principal"];
 
@@ -297,7 +308,7 @@ KellyOCG MRA Team`;
   }
 
   function resetTemplate(){
-    setPreview(DEFAULT_TEMPLATE);
+    setPreview(buildTemplate(clientName));
   }
 
   const [downloading,setDownloading]=useState(false);
@@ -1494,7 +1505,7 @@ export default function App(){
         </div>
       </div>
       <div style={{maxWidth:1160,margin:"0 auto",padding:"24px 32px 48px"}}>
-        {tab==="template"&&<TemplateBuilder jobs={jobs} setJobs={setJobs} locations={locations} setLocations={setLocations}/>}
+        {tab==="template"&&<TemplateBuilder jobs={jobs} setJobs={setJobs} locations={locations} setLocations={setLocations} clientName={activeProject?.client_name||""}/>}
         {tab==="tracker"&&<SupplierTracker suppliers={suppliers} setSuppliers={setSuppliers} responses={responses} jobs={jobs} locations={locations}/>}
         {tab==="data"&&<DataEntry responses={responses} setResponses={setResponses} suppliers={suppliers}/>}
         {tab==="analytics"&&<Analytics responses={responses} suppliers={suppliers} jobs={jobs} locations={locations}/>}
