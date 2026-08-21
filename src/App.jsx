@@ -43,19 +43,60 @@ function isOutlier(val,arr){
   return sd>0&&Math.abs(val-m)>1.5*sd;
 }
 
+// Normalize strings for fuzzy matching: lowercase, trim, collapse spaces
+function norm(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
+
+// Fuzzy location match: "Bristol, UK" matches "Bristol" etc.
+function locMatch(a,b){
+  const na=norm(a), nb=norm(b);
+  if(na===nb) return true;
+  // Check if either contains the other (handles "Bristol" vs "Bristol, UK")
+  return na.includes(nb)||nb.includes(na);
+}
+
+// Fuzzy title match: strip embedded level suffixes for comparison
+function stripLevel(t){ return norm(t).replace(/\s*[-–]\s*(level\s*\d+|\d+\s*entry|\d+\s*intermediate|\d+\s*senior|\d+\s*expert|\d+\s*principal)/i,"").trim(); }
+
 // Completeness: what % of expected role×location combos did a supplier fill in?
+// Uses fuzzy matching so imported data aligns with job list even with minor title/level/location differences.
 function completeness(supplierName, responses, jobs, locations){
   const expected = jobs.length * locations.length;
   if(expected===0) return {pct:0,filled:0,expected:0,missing:[]};
-  const filled = new Set(
-    responses.filter(r=>r.supplier===supplierName)
-      .map(r=>`${r.title}|${r.level}|${r.location}`)
-  );
+
+  const supRecs = responses.filter(r=>norm(r.supplier)===norm(supplierName));
+
   const missing = [];
   jobs.forEach(j=>{
     locations.forEach(l=>{
-      const key=`${j.title}|${j.level}|${l}`;
-      if(!filled.has(key)) missing.push(`${j.title} ${j.level} – ${l}`);
+      // A response matches this job×location if:
+      // 1. Title matches (exact normalized, OR stripped of embedded level, OR fullTitle matches)
+      // 2. Level matches (exact normalized, OR both empty/missing, OR level embedded in response title)
+      // 3. Location matches (fuzzy)
+      const hit = supRecs.some(r=>{
+        const rTitle=norm(r.title); const rLevel=norm(r.level); const rLoc=norm(r.location);
+        const jTitle=norm(j.title); const jLevel=norm(j.level);
+        const jFullTitle=norm(j.fullTitle||"");
+
+        // Title match: direct, stripped, or fullTitle
+        const titleOk = rTitle===jTitle
+          || stripLevel(rTitle)===stripLevel(jTitle)
+          || (jFullTitle&&(rTitle===jFullTitle||stripLevel(rTitle)===stripLevel(jFullTitle)))
+          || jTitle.includes(rTitle)||rTitle.includes(jTitle);
+
+        // Level match: exact, or both blank, or level embedded in the other's title
+        const levelOk = rLevel===jLevel
+          || (!rLevel&&!jLevel)
+          || norm(r.title+" "+r.level).includes(jLevel)
+          || norm(j.title+" "+j.level).includes(rLevel)
+          || (!rLevel) // supplier left level blank — count it against any level variant of that title
+          || (!jLevel);
+
+        // Location match: fuzzy
+        const locationOk = locMatch(r.location, l);
+
+        return titleOk && levelOk && locationOk;
+      });
+      if(!hit) missing.push(`${j.title}${j.level?" – "+j.level:""} – ${l}`);
     });
   });
   const filledCount = expected - missing.length;
@@ -152,37 +193,6 @@ function Toast({msg}){
   const color=ok?C.mint:info?C.sky:C.amber;
   const bg=ok?C.mintLight:info?C.skyLight:C.amberLight;
   return <div style={{padding:"9px 14px",borderRadius:8,fontSize:13,marginTop:10,background:bg,color}}>{msg}</div>;
-}
-
-// ─── AI helpers ───────────────────────────────────────────────────────────────
-async function callClaude(prompt, maxTokens=1000){
-  const res = await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:prompt}]}),
-  });
-  const data = await res.json();
-  return data.content?.find(b=>b.type==="text")?.text||"";
-}
-
-// Microsoft Graph API helper — sends via Outlook on behalf of SENDER_EMAIL
-async function sendOutlookEmail(toEmail, subject, body){
-  // Uses the Microsoft 365 MCP connector which handles auth automatically
-  const res = await fetch("https://microsoft365.mcp.claude.com/mcp", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({
-      tool: "send_email",
-      input: {
-        to: toEmail,
-        subject: subject,
-        body: body,
-        from: SENDER_EMAIL,
-        bodyType: "text",
-      }
-    }),
-  });
-  if(!res.ok) throw new Error(`Send failed: ${res.status}`);
-  return true;
 }
 
 // ─── TEMPLATE BUILDER ────────────────────────────────────────────────────────
@@ -467,12 +477,6 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [newName,setNewName]=useState("");
   const [newEmail,setNewEmail]=useState("");
   const [filter,setFilter]=useState("all");
-  const [draftInfo,setDraftInfo]=useState(null);
-  const [draft,setDraft]=useState("");
-  const [draftSubject,setDraftSubject]=useState("");
-  const [drafting,setDrafting]=useState(false);
-  const [sending,setSending]=useState(false);
-  const [sendStatus,setSendStatus]=useState({});
   const [importMsg,setImportMsg]=useState("");
   const [expandedCompletion,setExpandedCompletion]=useState(null);
   const [editingNote,setEditingNote]=useState(null);
@@ -558,58 +562,6 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     reader.readAsBinaryString(file);
   }
 
-  async function draftEmail(supplier,type){
-    setDraftInfo({supplier,type});setDrafting(true);setDraft("");setDraftSubject("");
-    const roleList = jobs.map(j=>`${j.title} - ${j.level}`).join(", ");
-    const locList = locations.join(", ");
-    const prompts={
-      initial:`Write a professional initial outreach email to staffing supplier ${supplier.name} asking them to complete a rate survey for hourly bill and pay rates.
-Roles to survey: ${roleList}.
-Locations: ${locList}.
-Keep it warm and concise. The sender is Hadley Yoas from Kelly Services.
-Return in this exact format:
-SUBJECT: [subject line here]
-BODY:
-[email body here]`,
-      followup:`Write a brief friendly follow-up email to ${supplier.name} who hasn't yet responded to our rate survey. Not pushy. Sender is Hadley Yoas from Kelly Services.
-Return:
-SUBJECT: [subject line]
-BODY:
-[body]`,
-      final:`Write a final notice email to ${supplier.name} — rate survey closes in 48 hours. Polite urgency. Sender is Hadley Yoas from Kelly Services.
-Return:
-SUBJECT: [subject line]
-BODY:
-[body]`,
-    };
-    try{
-      const text = await callClaude(prompts[type], 800);
-      const subjectMatch = text.match(/SUBJECT:\s*(.+)/);
-      const bodyMatch = text.match(/BODY:\s*([\s\S]+)/);
-      setDraftSubject(subjectMatch?subjectMatch[1].trim():"Rate Survey Request");
-      setDraft(bodyMatch?bodyMatch[1].trim():text);
-    }catch{setDraft("Error generating email.");}
-    setDrafting(false);
-  }
-
-  async function sendEmail(supplier){
-    if(!supplier.contact){
-      setSendStatus(p=>({...p,[supplier.id]:"⚠️ No email address on file for this supplier."}));
-      return;
-    }
-    setSending(true);
-    setSendStatus(p=>({...p,[supplier.id]:"📨 Sending…"}));
-    try{
-      await sendOutlookEmail(supplier.contact, draftSubject, draft);
-      setSendStatus(p=>({...p,[supplier.id]:`✅ Sent to ${supplier.contact}`}));
-      updateStatus(supplier.id, draftInfo.type==="initial"?"sent":draftInfo.type==="followup"?"follow_up":supplier.status);
-      setTimeout(()=>setDraftInfo(null),1500);
-    }catch(err){
-      setSendStatus(p=>({...p,[supplier.id]:`⚠️ Send failed — check your Microsoft 365 connection. (${err.message})`}));
-    }
-    setSending(false);
-  }
-
   const counts={
     all:suppliers.length,
     responded:suppliers.filter(s=>s.status==="responded").length,
@@ -657,17 +609,6 @@ BODY:
         </div>
       </Card>
 
-      {/* Outlook sender badge */}
-      <Card style={{padding:"12px 20px",background:C.purpleLight,border:`1px solid #DDD6FE`}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:20}}>📧</span>
-          <div>
-            <div style={{fontWeight:700,fontSize:13,color:C.purple}}>Outlook Connected</div>
-            <div style={{fontSize:12,color:C.slate}}>Emails will be sent from <strong>{SENDER_EMAIL}</strong> via your Microsoft 365 account</div>
-          </div>
-        </div>
-      </Card>
-
       {/* Import */}
       <Card>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:10}}>📥 Import Supplier List</div>
@@ -698,7 +639,7 @@ BODY:
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
           <thead>
             <tr style={{borderBottom:`2px solid ${C.border}`}}>
-              {["Supplier","Country","Category","Contact","Status","Completeness","Notes","Actions"].map(h=>(
+              {["Supplier","Country","Category","Contact","Status","Completeness","Notes"].map(h=>(
                 <th key={h} style={{padding:"6px 10px",textAlign:"left",color:C.textMuted,fontWeight:600,fontSize:12}}>{h}</th>
               ))}
             </tr>
@@ -719,7 +660,23 @@ BODY:
                     <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.country||"—"}</td>
                     <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.category||"—"}</td>
                     <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}</td>
-                    <td style={{padding:"9px 10px"}}><StatusBadge status={s.status}/></td>
+                    <td style={{padding:"9px 10px"}}>
+                      <select
+                        value={s.status}
+                        onChange={e=>updateStatus(s.id,e.target.value)}
+                        style={{
+                          border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 8px",fontSize:12,
+                          fontWeight:600,cursor:"pointer",background:C.white,color:C.text,outline:"none",
+                        }}
+                      >
+                        <option value="not_sent">Not Sent</option>
+                        <option value="sent">Sent</option>
+                        <option value="follow_up">Follow-up</option>
+                        <option value="responded">Responded</option>
+                      </select>
+                      {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:3}}>Sent {s.sentAt}</div>}
+                      {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:2}}>Responded {s.respondedAt}</div>}
+                    </td>
                     <td style={{padding:"9px 10px"}}>
                       {s.status==="responded"?(
                         <div>
@@ -755,18 +712,10 @@ BODY:
                         </div>
                       )}
                     </td>
-                    <td style={{padding:"9px 10px"}}>
-                      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                        {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>draftEmail(s,"initial")}>Draft & Send</Btn>}
-                        {s.status==="sent"&&<Btn size="sm" variant="amber" onClick={()=>draftEmail(s,"followup")}>Follow-up</Btn>}
-                        {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>draftEmail(s,"final")}>Final Notice</Btn>}
-                        {s.status!=="responded"&&<Btn size="sm" variant="mint" onClick={()=>updateStatus(s.id,"responded")}>✓ Mark Responded</Btn>}
-                      </div>
-                    </td>
                   </tr>
                   {isExpanded&&comp.missing.length>0&&(
                     <tr key={s.id+"_missing"} style={{borderBottom:`1px solid ${C.border}`}}>
-                      <td colSpan={8} style={{padding:"0 10px 10px 10px"}}>
+                      <td colSpan={7} style={{padding:"0 10px 10px 10px"}}>
                         <div style={{background:C.amberLight,borderRadius:8,padding:"10px 14px"}}>
                           <div style={{fontWeight:600,fontSize:12,color:C.amber,marginBottom:6}}>Missing from {s.name}'s response:</div>
                           <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
@@ -786,42 +735,6 @@ BODY:
         </table>
       </Card>
 
-      {/* Email draft panel */}
-      {draftInfo&&(
-        <Card style={{border:`2px solid ${C.purple}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-            <div>
-              <div style={{fontWeight:700,color:C.navy,fontSize:15}}>
-                ✉️ {draftInfo.type==="initial"?"Initial Outreach":draftInfo.type==="followup"?"Follow-up":"Final Notice"} → {draftInfo.supplier.name}
-              </div>
-              <div style={{fontSize:12,color:C.textMuted,marginTop:2}}>Sending from {SENDER_EMAIL}</div>
-            </div>
-            <Btn size="sm" variant="ghost" onClick={()=>setDraftInfo(null)}>Dismiss</Btn>
-          </div>
-
-          {drafting?(
-            <div style={{color:C.textMuted,fontSize:13,padding:"24px 0",textAlign:"center"}}>Generating email draft…</div>
-          ):(
-            <>
-              <Input label="Subject" value={draftSubject} onChange={setDraftSubject} style={{marginBottom:10}}/>
-              <div style={{fontSize:12,fontWeight:600,color:C.textMuted,marginBottom:4}}>Body</div>
-              <textarea value={draft} onChange={e=>setDraft(e.target.value)}
-                style={{width:"100%",minHeight:220,border:`1px solid ${C.border}`,borderRadius:8,padding:12,fontSize:13,lineHeight:1.6,color:C.text,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
-              <Toast msg={sendStatus[draftInfo.supplier.id]}/>
-              <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
-                <Btn variant="purple" onClick={()=>sendEmail(draftInfo.supplier)} disabled={sending||!draft.trim()}>
-                  {sending?"Sending…":"📧 Send via Outlook"}
-                </Btn>
-                <Btn size="sm" variant="ghost" onClick={()=>navigator.clipboard?.writeText(draft)}>Copy to Clipboard</Btn>
-                <Btn size="sm" variant="ghost" onClick={()=>setDraftInfo(null)}>Close</Btn>
-                {!draftInfo.supplier.contact&&(
-                  <span style={{fontSize:12,color:C.rose,marginLeft:4}}>⚠️ No email address — update the supplier contact before sending.</span>
-                )}
-              </div>
-            </>
-          )}
-        </Card>
-      )}
     </div>
   );
 }
