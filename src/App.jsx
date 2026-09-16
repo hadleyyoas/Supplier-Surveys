@@ -43,60 +43,19 @@ function isOutlier(val,arr){
   return sd>0&&Math.abs(val-m)>1.5*sd;
 }
 
-// Normalize strings for fuzzy matching: lowercase, trim, collapse spaces
-function norm(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
-
-// Fuzzy location match: "Bristol, UK" matches "Bristol" etc.
-function locMatch(a,b){
-  const na=norm(a), nb=norm(b);
-  if(na===nb) return true;
-  // Check if either contains the other (handles "Bristol" vs "Bristol, UK")
-  return na.includes(nb)||nb.includes(na);
-}
-
-// Fuzzy title match: strip embedded level suffixes for comparison
-function stripLevel(t){ return norm(t).replace(/\s*[-–]\s*(level\s*\d+|\d+\s*entry|\d+\s*intermediate|\d+\s*senior|\d+\s*expert|\d+\s*principal)/i,"").trim(); }
-
 // Completeness: what % of expected role×location combos did a supplier fill in?
-// Uses fuzzy matching so imported data aligns with job list even with minor title/level/location differences.
 function completeness(supplierName, responses, jobs, locations){
   const expected = jobs.length * locations.length;
   if(expected===0) return {pct:0,filled:0,expected:0,missing:[]};
-
-  const supRecs = responses.filter(r=>norm(r.supplier)===norm(supplierName));
-
+  const filled = new Set(
+    responses.filter(r=>r.supplier===supplierName)
+      .map(r=>`${r.title}|${r.level}|${r.location}`)
+  );
   const missing = [];
   jobs.forEach(j=>{
     locations.forEach(l=>{
-      // A response matches this job×location if:
-      // 1. Title matches (exact normalized, OR stripped of embedded level, OR fullTitle matches)
-      // 2. Level matches (exact normalized, OR both empty/missing, OR level embedded in response title)
-      // 3. Location matches (fuzzy)
-      const hit = supRecs.some(r=>{
-        const rTitle=norm(r.title); const rLevel=norm(r.level); const rLoc=norm(r.location);
-        const jTitle=norm(j.title); const jLevel=norm(j.level);
-        const jFullTitle=norm(j.fullTitle||"");
-
-        // Title match: direct, stripped, or fullTitle
-        const titleOk = rTitle===jTitle
-          || stripLevel(rTitle)===stripLevel(jTitle)
-          || (jFullTitle&&(rTitle===jFullTitle||stripLevel(rTitle)===stripLevel(jFullTitle)))
-          || jTitle.includes(rTitle)||rTitle.includes(jTitle);
-
-        // Level match: exact, or both blank, or level embedded in the other's title
-        const levelOk = rLevel===jLevel
-          || (!rLevel&&!jLevel)
-          || norm(r.title+" "+r.level).includes(jLevel)
-          || norm(j.title+" "+j.level).includes(rLevel)
-          || (!rLevel) // supplier left level blank — count it against any level variant of that title
-          || (!jLevel);
-
-        // Location match: fuzzy
-        const locationOk = locMatch(r.location, l);
-
-        return titleOk && levelOk && locationOk;
-      });
-      if(!hit) missing.push(`${j.title}${j.level?" – "+j.level:""} – ${l}`);
+      const key=`${j.title}|${j.level}|${l}`;
+      if(!filled.has(key)) missing.push(`${j.title} ${j.level} – ${l}`);
     });
   });
   const filledCount = expected - missing.length;
@@ -193,6 +152,37 @@ function Toast({msg}){
   const color=ok?C.mint:info?C.sky:C.amber;
   const bg=ok?C.mintLight:info?C.skyLight:C.amberLight;
   return <div style={{padding:"9px 14px",borderRadius:8,fontSize:13,marginTop:10,background:bg,color}}>{msg}</div>;
+}
+
+// ─── AI helpers ───────────────────────────────────────────────────────────────
+async function callClaude(prompt, maxTokens=1000){
+  const res = await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:prompt}]}),
+  });
+  const data = await res.json();
+  return data.content?.find(b=>b.type==="text")?.text||"";
+}
+
+// Microsoft Graph API helper — sends via Outlook on behalf of SENDER_EMAIL
+async function sendOutlookEmail(toEmail, subject, body){
+  // Uses the Microsoft 365 MCP connector which handles auth automatically
+  const res = await fetch("https://microsoft365.mcp.claude.com/mcp", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({
+      tool: "send_email",
+      input: {
+        to: toEmail,
+        subject: subject,
+        body: body,
+        from: SENDER_EMAIL,
+        bodyType: "text",
+      }
+    }),
+  });
+  if(!res.ok) throw new Error(`Send failed: ${res.status}`);
+  return true;
 }
 
 // ─── TEMPLATE BUILDER ────────────────────────────────────────────────────────
@@ -477,14 +467,63 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [newName,setNewName]=useState("");
   const [newEmail,setNewEmail]=useState("");
   const [filter,setFilter]=useState("all");
+  const [draftInfo,setDraftInfo]=useState(null);
+  const [draft,setDraft]=useState("");
+  const [draftSubject,setDraftSubject]=useState("");
+  const [drafting,setDrafting]=useState(false);
+  const [sending,setSending]=useState(false);
+  const [sendStatus,setSendStatus]=useState({});
   const [importMsg,setImportMsg]=useState("");
   const [expandedCompletion,setExpandedCompletion]=useState(null);
   const [editingNote,setEditingNote]=useState(null);
   const [noteText,setNoteText]=useState("");
+  // Editing supplier inline
+  const [editingSupplier,setEditingSupplier]=useState(null); // supplier id
+  const [editFields,setEditFields]=useState({});
+  // Bulk selection
+  const [selectedIds,setSelectedIds]=useState(new Set());
+  const [bulkStatus,setBulkStatus]=useState("sent");
 
   function saveNote(id){
     setSuppliers(p=>p.map(s=>s.id===id?{...s,notes:noteText}:s));
     setEditingNote(null);setNoteText("");
+  }
+
+  function startEdit(s){
+    setEditingSupplier(s.id);
+    setEditFields({name:s.name,contact:s.contact||"",pocName:s.pocName||"",country:s.country||"",category:s.category||""});
+  }
+  function saveEdit(id){
+    setSuppliers(p=>p.map(s=>s.id===id?{...s,...editFields}:s));
+    setEditingSupplier(null);
+  }
+  function removeSupplier(id){
+    if(!window.confirm("Remove this supplier from the list? Their response data will remain in Data Entry."))return;
+    setSuppliers(p=>p.filter(s=>s.id!==id));
+  }
+
+  function toggleSelect(id){
+    setSelectedIds(prev=>{
+      const next=new Set(prev);
+      next.has(id)?next.delete(id):next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll(){
+    const visibleIds=filtered.map(s=>s.id);
+    const allSelected=visibleIds.every(id=>selectedIds.has(id));
+    if(allSelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(visibleIds));
+  }
+  function applyBulkStatus(){
+    if(!selectedIds.size)return;
+    const now=new Date().toISOString().split("T")[0];
+    setSuppliers(p=>p.map(s=>selectedIds.has(s.id)?{
+      ...s,status:bulkStatus,
+      sentAt:(bulkStatus==="sent"&&!s.sentAt)?now:s.sentAt,
+      respondedAt:bulkStatus==="responded"?now:s.respondedAt,
+    }:s));
+    setSelectedIds(new Set());
   }
 
   function addSupplier(){
@@ -562,6 +601,58 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     reader.readAsBinaryString(file);
   }
 
+  async function draftEmail(supplier,type){
+    setDraftInfo({supplier,type});setDrafting(true);setDraft("");setDraftSubject("");
+    const roleList = jobs.map(j=>`${j.title} - ${j.level}`).join(", ");
+    const locList = locations.join(", ");
+    const prompts={
+      initial:`Write a professional initial outreach email to staffing supplier ${supplier.name} asking them to complete a rate survey for hourly bill and pay rates.
+Roles to survey: ${roleList}.
+Locations: ${locList}.
+Keep it warm and concise. The sender is Hadley Yoas from Kelly Services.
+Return in this exact format:
+SUBJECT: [subject line here]
+BODY:
+[email body here]`,
+      followup:`Write a brief friendly follow-up email to ${supplier.name} who hasn't yet responded to our rate survey. Not pushy. Sender is Hadley Yoas from Kelly Services.
+Return:
+SUBJECT: [subject line]
+BODY:
+[body]`,
+      final:`Write a final notice email to ${supplier.name} — rate survey closes in 48 hours. Polite urgency. Sender is Hadley Yoas from Kelly Services.
+Return:
+SUBJECT: [subject line]
+BODY:
+[body]`,
+    };
+    try{
+      const text = await callClaude(prompts[type], 800);
+      const subjectMatch = text.match(/SUBJECT:\s*(.+)/);
+      const bodyMatch = text.match(/BODY:\s*([\s\S]+)/);
+      setDraftSubject(subjectMatch?subjectMatch[1].trim():"Rate Survey Request");
+      setDraft(bodyMatch?bodyMatch[1].trim():text);
+    }catch{setDraft("Error generating email.");}
+    setDrafting(false);
+  }
+
+  async function sendEmail(supplier){
+    if(!supplier.contact){
+      setSendStatus(p=>({...p,[supplier.id]:"⚠️ No email address on file for this supplier."}));
+      return;
+    }
+    setSending(true);
+    setSendStatus(p=>({...p,[supplier.id]:"📨 Sending…"}));
+    try{
+      await sendOutlookEmail(supplier.contact, draftSubject, draft);
+      setSendStatus(p=>({...p,[supplier.id]:`✅ Sent to ${supplier.contact}`}));
+      updateStatus(supplier.id, draftInfo.type==="initial"?"sent":draftInfo.type==="followup"?"follow_up":supplier.status);
+      setTimeout(()=>setDraftInfo(null),1500);
+    }catch(err){
+      setSendStatus(p=>({...p,[supplier.id]:`⚠️ Send failed — check your Microsoft 365 connection. (${err.message})`}));
+    }
+    setSending(false);
+  }
+
   const counts={
     all:suppliers.length,
     responded:suppliers.filter(s=>s.status==="responded").length,
@@ -609,6 +700,17 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
         </div>
       </Card>
 
+      {/* Outlook sender badge */}
+      <Card style={{padding:"12px 20px",background:C.purpleLight,border:`1px solid #DDD6FE`}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:20}}>📧</span>
+          <div>
+            <div style={{fontWeight:700,fontSize:13,color:C.purple}}>Outlook Connected</div>
+            <div style={{fontSize:12,color:C.slate}}>Emails will be sent from <strong>{SENDER_EMAIL}</strong> via your Microsoft 365 account</div>
+          </div>
+        </div>
+      </Card>
+
       {/* Import */}
       <Card>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:10}}>📥 Import Supplier List</div>
@@ -628,18 +730,43 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
 
       {/* Supplier list */}
       <Card>
-        <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-          {[["all","All"],["responded","Responded"],["sent","Sent"],["follow_up","Follow-up"],["not_sent","Not Sent"]].map(([val,label])=>(
-            <button key={val} onClick={()=>setFilter(val)} style={{
-              padding:"5px 14px",borderRadius:99,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
-              background:filter===val?C.navy:C.slateLight,color:filter===val?C.white:C.textMuted,
-            }}>{label} ({val==="all"?counts.all:counts[val]??0})</button>
-          ))}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {[["all","All"],["responded","Responded"],["sent","Sent"],["follow_up","Follow-up"],["not_sent","Not Sent"]].map(([val,label])=>(
+              <button key={val} onClick={()=>{setFilter(val);setSelectedIds(new Set());}} style={{
+                padding:"5px 14px",borderRadius:99,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
+                background:filter===val?C.navy:C.slateLight,color:filter===val?C.white:C.textMuted,
+              }}>{label} ({val==="all"?counts.all:counts[val]??0})</button>
+            ))}
+          </div>
         </div>
+
+        {/* Bulk action toolbar — shown when something is selected */}
+        {selectedIds.size>0&&(
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:C.navyLight,borderRadius:9,marginBottom:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.white}}>{selectedIds.size} selected</span>
+            <span style={{color:"#93C5FD",fontSize:13}}>Set status to:</span>
+            <select value={bulkStatus} onChange={e=>setBulkStatus(e.target.value)}
+              style={{border:"none",borderRadius:7,padding:"5px 10px",fontSize:13,color:C.text,background:C.white,fontWeight:600}}>
+              <option value="not_sent">Not Sent</option>
+              <option value="sent">Sent</option>
+              <option value="follow_up">Follow-up</option>
+              <option value="responded">Responded</option>
+            </select>
+            <Btn size="sm" variant="mint" onClick={applyBulkStatus}>Apply to {selectedIds.size}</Btn>
+            <Btn size="sm" variant="ghost" style={{color:C.white,borderColor:"rgba(255,255,255,.3)"}} onClick={()=>setSelectedIds(new Set())}>Clear</Btn>
+          </div>
+        )}
+
+        <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
           <thead>
             <tr style={{borderBottom:`2px solid ${C.border}`}}>
-              {["Supplier","Country","Category","Contact","Status","Completeness","Notes"].map(h=>(
+              <th style={{padding:"6px 10px",width:32}}>
+                <input type="checkbox" checked={filtered.length>0&&filtered.every(s=>selectedIds.has(s.id))}
+                  onChange={toggleSelectAll} style={{cursor:"pointer",accentColor:C.navy}}/>
+              </th>
+              {["Supplier","Country","Category","Contact","Status","Completeness","Notes","Actions"].map(h=>(
                 <th key={h} style={{padding:"6px 10px",textAlign:"left",color:C.textMuted,fontWeight:600,fontSize:12}}>{h}</th>
               ))}
             </tr>
@@ -648,35 +775,50 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
             {filtered.map(s=>{
               const comp=completeness(s.name,responses,jobs,locations);
               const isExpanded=expandedCompletion===s.id;
+              const isEditing=editingSupplier===s.id;
+              const isSelected=selectedIds.has(s.id);
               return(
-                <>
-                  <tr key={s.id} style={{borderBottom:isExpanded?"none":`1px solid ${C.border}`,verticalAlign:"top"}}>
-                    <td style={{padding:"9px 10px",fontWeight:600,minWidth:160}}>
-                      {s.name}
-                      {s.pocName&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>👤 {s.pocName}</div>}
-                      {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>Sent {s.sentAt}</div>}
-                      {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:1}}>Responded {s.respondedAt}</div>}
-                    </td>
-                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.country||"—"}</td>
-                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.category||"—"}</td>
-                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>{s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}</td>
+                <React.Fragment key={s.id}>
+                  <tr style={{borderBottom:isExpanded?"none":`1px solid ${C.border}`,verticalAlign:"top",background:isSelected?"#EFF6FF":"transparent"}}>
                     <td style={{padding:"9px 10px"}}>
-                      <select
-                        value={s.status}
-                        onChange={e=>updateStatus(s.id,e.target.value)}
-                        style={{
-                          border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 8px",fontSize:12,
-                          fontWeight:600,cursor:"pointer",background:C.white,color:C.text,outline:"none",
-                        }}
-                      >
-                        <option value="not_sent">Not Sent</option>
-                        <option value="sent">Sent</option>
-                        <option value="follow_up">Follow-up</option>
-                        <option value="responded">Responded</option>
-                      </select>
-                      {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:3}}>Sent {s.sentAt}</div>}
-                      {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:2}}>Responded {s.respondedAt}</div>}
+                      <input type="checkbox" checked={isSelected} onChange={()=>toggleSelect(s.id)} style={{cursor:"pointer",accentColor:C.navy}}/>
                     </td>
+                    <td style={{padding:"9px 10px",fontWeight:600,minWidth:160}}>
+                      {isEditing?(
+                        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                          <input value={editFields.name} onChange={e=>setEditFields(p=>({...p,name:e.target.value}))}
+                            style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:13,fontWeight:700,color:C.navy,width:"100%",boxSizing:"border-box"}}/>
+                          <input value={editFields.pocName} onChange={e=>setEditFields(p=>({...p,pocName:e.target.value}))}
+                            placeholder="PoC Name" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:11,width:"100%",boxSizing:"border-box"}}/>
+                        </div>
+                      ):(
+                        <>
+                          {s.name}
+                          {s.pocName&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>👤 {s.pocName}</div>}
+                          {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>Sent {s.sentAt}</div>}
+                          {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:1}}>Responded {s.respondedAt}</div>}
+                        </>
+                      )}
+                    </td>
+                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
+                      {isEditing?(
+                        <input value={editFields.country} onChange={e=>setEditFields(p=>({...p,country:e.target.value}))}
+                          placeholder="Country" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                      ):s.country||"—"}
+                    </td>
+                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
+                      {isEditing?(
+                        <input value={editFields.category} onChange={e=>setEditFields(p=>({...p,category:e.target.value}))}
+                          placeholder="Category" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                      ):s.category||"—"}
+                    </td>
+                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
+                      {isEditing?(
+                        <input value={editFields.contact} onChange={e=>setEditFields(p=>({...p,contact:e.target.value}))}
+                          placeholder="Email address" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                      ):s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}
+                    </td>
+                    <td style={{padding:"9px 10px"}}><StatusBadge status={s.status}/></td>
                     <td style={{padding:"9px 10px"}}>
                       {s.status==="responded"?(
                         <div>
@@ -712,10 +854,29 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
                         </div>
                       )}
                     </td>
+                    <td style={{padding:"9px 10px"}}>
+                      {isEditing?(
+                        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                          <Btn size="sm" variant="mint" onClick={()=>saveEdit(s.id)}>Save</Btn>
+                          <Btn size="sm" variant="ghost" onClick={()=>setEditingSupplier(null)}>Cancel</Btn>
+                        </div>
+                      ):(
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                          {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>draftEmail(s,"initial")}>Draft & Send</Btn>}
+                          {s.status==="sent"&&<Btn size="sm" variant="amber" onClick={()=>draftEmail(s,"followup")}>Follow-up</Btn>}
+                          {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>draftEmail(s,"final")}>Final Notice</Btn>}
+                          {s.status!=="responded"&&<Btn size="sm" variant="mint" onClick={()=>updateStatus(s.id,"responded")}>✓ Mark Responded</Btn>}
+                          <Btn size="sm" variant="ghost" onClick={()=>startEdit(s)} style={{color:C.sky,borderColor:C.sky}}>Edit</Btn>
+                          <button onClick={()=>removeSupplier(s.id)}
+                            title="Remove supplier"
+                            style={{background:"none",border:"none",color:C.rose,cursor:"pointer",fontSize:16,padding:"2px 4px",lineHeight:1}}>×</button>
+                        </div>
+                      )}
+                    </td>
                   </tr>
                   {isExpanded&&comp.missing.length>0&&(
                     <tr key={s.id+"_missing"} style={{borderBottom:`1px solid ${C.border}`}}>
-                      <td colSpan={7} style={{padding:"0 10px 10px 10px"}}>
+                      <td colSpan={9} style={{padding:"0 10px 10px 10px"}}>
                         <div style={{background:C.amberLight,borderRadius:8,padding:"10px 14px"}}>
                           <div style={{fontWeight:600,fontSize:12,color:C.amber,marginBottom:6}}>Missing from {s.name}'s response:</div>
                           <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
@@ -728,19 +889,56 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               );
             })}
           </tbody>
         </table>
+        </div>
       </Card>
 
+      {/* Email draft panel */}
+      {draftInfo&&(
+        <Card style={{border:`2px solid ${C.purple}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div>
+              <div style={{fontWeight:700,color:C.navy,fontSize:15}}>
+                ✉️ {draftInfo.type==="initial"?"Initial Outreach":draftInfo.type==="followup"?"Follow-up":"Final Notice"} → {draftInfo.supplier.name}
+              </div>
+              <div style={{fontSize:12,color:C.textMuted,marginTop:2}}>Sending from {SENDER_EMAIL}</div>
+            </div>
+            <Btn size="sm" variant="ghost" onClick={()=>setDraftInfo(null)}>Dismiss</Btn>
+          </div>
+
+          {drafting?(
+            <div style={{color:C.textMuted,fontSize:13,padding:"24px 0",textAlign:"center"}}>Generating email draft…</div>
+          ):(
+            <>
+              <Input label="Subject" value={draftSubject} onChange={setDraftSubject} style={{marginBottom:10}}/>
+              <div style={{fontSize:12,fontWeight:600,color:C.textMuted,marginBottom:4}}>Body</div>
+              <textarea value={draft} onChange={e=>setDraft(e.target.value)}
+                style={{width:"100%",minHeight:220,border:`1px solid ${C.border}`,borderRadius:8,padding:12,fontSize:13,lineHeight:1.6,color:C.text,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
+              <Toast msg={sendStatus[draftInfo.supplier.id]}/>
+              <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
+                <Btn variant="purple" onClick={()=>sendEmail(draftInfo.supplier)} disabled={sending||!draft.trim()}>
+                  {sending?"Sending…":"📧 Send via Outlook"}
+                </Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>navigator.clipboard?.writeText(draft)}>Copy to Clipboard</Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>setDraftInfo(null)}>Close</Btn>
+                {!draftInfo.supplier.contact&&(
+                  <span style={{fontSize:12,color:C.rose,marginLeft:4}}>⚠️ No email address — update the supplier contact before sending.</span>
+                )}
+              </div>
+            </>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
 
 // ─── DATA ENTRY ───────────────────────────────────────────────────────────────
-function DataEntry({responses,setResponses,suppliers}){
+function DataEntry({responses,setResponses,suppliers,setSuppliers}){
   const [selectedSupplier,setSelectedSupplier]=useState(suppliers[0]?.name||"");
   const [addingNew,setAddingNew]=useState(false);
   const [newSupName,setNewSupName]=useState("");
@@ -820,7 +1018,13 @@ function DataEntry({responses,setResponses,suppliers}){
 
   function confirmImport(){
     setResponses(p=>[...p,...preview]);
-    setImportMsg(`✅ Imported ${preview.length} records from ${selectedSupplier}`);
+    // Auto-mark supplier as responded in the tracker
+    const now=new Date().toISOString().split("T")[0];
+    setSuppliers(p=>p.map(s=>s.name===selectedSupplier&&s.status!=="responded"
+      ?{...s,status:"responded",respondedAt:s.respondedAt||now}
+      :s
+    ));
+    setImportMsg(`✅ Imported ${preview.length} records from ${selectedSupplier} — supplier marked as Responded`);
     setPreview([]);
   }
   function addManual(){
@@ -1255,10 +1459,11 @@ function Analytics({responses,suppliers,jobs,locations}){
 }
 
 // ─── PROJECT SELECTOR ────────────────────────────────────────────────────────
-function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,loading}){
+function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive,loading}){
   const [newName,setNewName]=useState("");
   const [newClient,setNewClient]=useState("");
   const [creating,setCreating]=useState(false);
+  const [showArchived,setShowArchived]=useState(false);
 
   function handleCreate(){
     if(!newName.trim())return;
@@ -1266,9 +1471,55 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,loading})
     setNewName("");setNewClient("");setCreating(false);
   }
 
+  const active=projects.filter(p=>!p.archived);
+  const archived=projects.filter(p=>p.archived);
+
+  function ProjectRow({p}){
+    const isActive=activeId===p.id;
+    const isArch=!!p.archived;
+    return(
+      <div style={{
+        display:"flex",alignItems:"center",justifyContent:"space-between",
+        background:isActive?C.navy:isArch?"#F8FAFC":C.slateLight,
+        borderRadius:9,padding:"12px 16px",
+        border:isArch?`1px dashed ${C.border}`:"none",
+        transition:"background .15s",
+      }}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{fontWeight:700,fontSize:14,color:isActive?C.white:isArch?C.textMuted:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
+            {isArch&&<span style={{fontSize:10,fontWeight:700,color:C.textMuted,background:C.border,padding:"1px 7px",borderRadius:99,flexShrink:0}}>Closed</span>}
+          </div>
+          <div style={{fontSize:11,color:isActive?"#93C5FD":C.textMuted,marginTop:2}}>
+            {p.client_name&&`Client: ${p.client_name} · `}Created {new Date(p.created_at).toLocaleDateString()}
+            {isArch&&p.archived_at&&` · Closed ${new Date(p.archived_at).toLocaleDateString()}`}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,marginLeft:12}}>
+          <Btn size="sm" variant={isActive?"ghost":"sky"} onClick={()=>onSelect(p.id)}>
+            {isActive?"✓ Active":"Open"}
+          </Btn>
+          {!isArch&&(
+            <button onClick={e=>{e.stopPropagation();if(window.confirm("Close this survey? The data stays saved and you can reopen it anytime."))onArchive(p.id,true);}}
+              title="Close survey (keeps all data)"
+              style={{background:"none",border:`1px solid ${C.border}`,borderRadius:7,color:C.textMuted,cursor:"pointer",fontSize:12,padding:"4px 10px",fontWeight:600}}>Close</button>
+          )}
+          {isArch&&(
+            <button onClick={e=>{e.stopPropagation();onArchive(p.id,false);}}
+              title="Reopen this survey"
+              style={{background:"none",border:`1px solid ${C.mint}`,borderRadius:7,color:C.mint,cursor:"pointer",fontSize:12,padding:"4px 10px",fontWeight:600}}>Reopen</button>
+          )}
+          <button onClick={e=>{e.stopPropagation();if(window.confirm("Permanently delete this project and all its data? This cannot be undone."))onDelete(p.id);}}
+            title="Delete permanently"
+            style={{background:"none",border:"none",color:isActive?"#FC8181":C.rose,cursor:"pointer",fontSize:18,padding:"2px 6px",lineHeight:1}}>×</button>
+        </div>
+      </div>
+    );
+  }
+
   return(
     <div style={{minHeight:"100vh",background:"#F0F4F9",fontFamily:"'Inter',system-ui,sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
-      <div style={{width:"100%",maxWidth:600}}>
+      <div style={{width:"100%",maxWidth:640}}>
         <div style={{textAlign:"center",marginBottom:32}}>
           <div style={{fontSize:32,marginBottom:8}}>⚡</div>
           <div style={{fontSize:24,fontWeight:800,color:C.navy,letterSpacing:-0.5}}>SupplierRate</div>
@@ -1294,35 +1545,30 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,loading})
 
           {loading?(
             <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>Loading projects…</div>
-          ):projects.length===0?(
+          ):active.length===0&&archived.length===0?(
             <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>
               <div style={{fontSize:32,marginBottom:8}}>📁</div>
               No projects yet — create your first one above
             </div>
           ):(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {projects.map(p=>(
-                <div key={p.id} style={{
-                  display:"flex",alignItems:"center",justifyContent:"space-between",
-                  background:activeId===p.id?C.navy:C.slateLight,
-                  borderRadius:9,padding:"12px 16px",cursor:"pointer",
-                  transition:"background .15s",
-                }} onClick={()=>onSelect(p.id)}>
-                  <div>
-                    <div style={{fontWeight:700,fontSize:14,color:activeId===p.id?C.white:C.text}}>{p.name}</div>
-                    <div style={{fontSize:11,color:activeId===p.id?"#93C5FD":C.textMuted,marginTop:2}}>
-                      {p.client_name&&`Client: ${p.client_name} · `}Created {new Date(p.created_at).toLocaleDateString()}
+              {active.length===0&&(
+                <div style={{textAlign:"center",padding:"20px 0",color:C.textMuted,fontSize:13}}>No active surveys — create one above or reopen a closed one below.</div>
+              )}
+              {active.map(p=><ProjectRow key={p.id} p={p}/>)}
+
+              {archived.length>0&&(
+                <div style={{marginTop:8}}>
+                  <button onClick={()=>setShowArchived(!showArchived)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,color:C.textMuted,display:"flex",alignItems:"center",gap:5,padding:"4px 0"}}>
+                    {showArchived?"▲":"▼"} {archived.length} closed survey{archived.length!==1?"s":""}
+                  </button>
+                  {showArchived&&(
+                    <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8}}>
+                      {archived.map(p=><ProjectRow key={p.id} p={p}/>)}
                     </div>
-                  </div>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <Btn size="sm" variant={activeId===p.id?"ghost":"sky"} onClick={e=>{e.stopPropagation();onSelect(p.id);}}>
-                      {activeId===p.id?"✓ Active":"Open"}
-                    </Btn>
-                    <button onClick={e=>{e.stopPropagation();if(window.confirm("Delete this project and all its data? This cannot be undone."))onDelete(p.id);}}
-                      style={{background:"none",border:"none",color:activeId===p.id?"#FC8181":C.rose,cursor:"pointer",fontSize:16,padding:"2px 6px"}}>×</button>
-                  </div>
+                  )}
                 </div>
-              ))}
+              )}
             </div>
           )}
         </Card>
@@ -1432,11 +1678,18 @@ export default function App(){
     return c.pct<100&&c.pct>0;
   }).length;
 
+  function handleArchiveProject(pid,archived){
+    setStore(prev=>({
+      ...prev,
+      projects:(prev.projects||[]).map(p=>p.id===pid?{...p,archived,archived_at:archived?new Date().toISOString():null}:p),
+    }));
+  }
+
   if(!activeProjectId||showProjects){
     return <ProjectSelector
       projects={projects} activeId={activeProjectId}
       onSelect={handleSelectProject} onCreate={handleCreateProject}
-      onDelete={handleDeleteProject} loading={false}/>;
+      onDelete={handleDeleteProject} onArchive={handleArchiveProject} loading={false}/>;
   }
 
   return(
@@ -1474,7 +1727,7 @@ export default function App(){
       <div style={{maxWidth:1160,margin:"0 auto",padding:"24px 32px 48px"}}>
         {tab==="template"&&<TemplateBuilder jobs={jobs} setJobs={setJobs} locations={locations} setLocations={setLocations} clientName={activeProject?.client_name||""}/>}
         {tab==="tracker"&&<SupplierTracker suppliers={suppliers} setSuppliers={setSuppliers} responses={responses} jobs={jobs} locations={locations}/>}
-        {tab==="data"&&<DataEntry responses={responses} setResponses={setResponses} suppliers={suppliers}/>}
+        {tab==="data"&&<DataEntry responses={responses} setResponses={setResponses} suppliers={suppliers} setSuppliers={setSuppliers}/>}
         {tab==="analytics"&&<Analytics responses={responses} suppliers={suppliers} jobs={jobs} locations={locations}/>}
       </div>
     </div>
