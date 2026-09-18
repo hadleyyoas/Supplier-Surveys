@@ -96,6 +96,7 @@ function Btn({children,onClick,variant="primary",size="md",style={},disabled=fal
     sky:{background:C.sky,color:C.white},
     mint:{background:C.mint,color:C.white},
     ghost:{background:"transparent",color:C.navy,border:`1px solid ${C.border}`},
+    ghostLight:{background:"rgba(255,255,255,.15)",color:C.white,border:`1px solid rgba(255,255,255,.4)`},
     danger:{background:C.rose,color:C.white},
     amber:{background:C.amber,color:C.white},
     purple:{background:C.purple,color:C.white},
@@ -467,6 +468,7 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [newName,setNewName]=useState("");
   const [newEmail,setNewEmail]=useState("");
   const [filter,setFilter]=useState("all");
+  const [search,setSearch]=useState("");
   const [draftInfo,setDraftInfo]=useState(null);
   const [draft,setDraft]=useState("");
   const [draftSubject,setDraftSubject]=useState("");
@@ -477,18 +479,20 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [expandedCompletion,setExpandedCompletion]=useState(null);
   const [editingNote,setEditingNote]=useState(null);
   const [noteText,setNoteText]=useState("");
-  // Inline edit state
+  // Inline edit
   const [editingSupplier,setEditingSupplier]=useState(null);
   const [editFields,setEditFields]=useState({});
-  // Bulk selection state
+  // Bulk selection
   const [selectedIds,setSelectedIds]=useState(new Set());
   const [bulkStatus,setBulkStatus]=useState("sent");
+  // Manual completeness override
+  const [editingCompleteness,setEditingCompleteness]=useState(null);
+  const [completenessInput,setCompletenessInput]=useState("");
 
   function saveNote(id){
     setSuppliers(p=>p.map(s=>s.id===id?{...s,notes:noteText}:s));
     setEditingNote(null);setNoteText("");
   }
-
   function startEdit(s){
     setEditingSupplier(s.id);
     setEditFields({name:s.name,contact:s.contact||"",pocName:s.pocName||"",country:s.country||"",category:s.category||""});
@@ -497,17 +501,26 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     setSuppliers(p=>p.map(s=>s.id===id?{...s,...editFields}:s));
     setEditingSupplier(null);
   }
+  function saveManualCompleteness(id){
+    const val=parseInt(completenessInput,10);
+    if(isNaN(val)||val<0||val>100)return;
+    setSuppliers(p=>p.map(s=>s.id===id?{...s,manualCompleteness:val}:s));
+    setEditingCompleteness(null);setCompletenessInput("");
+  }
+  function resetManualCompleteness(id){
+    setSuppliers(p=>p.map(s=>s.id===id?{...s,manualCompleteness:undefined}:s));
+    setEditingCompleteness(null);setCompletenessInput("");
+  }
   function removeSupplier(id){
     if(!window.confirm("Remove this supplier from the list? Their response data in Data Entry will remain."))return;
     setSuppliers(p=>p.filter(s=>s.id!==id));
   }
-
   function toggleSelect(id){
     setSelectedIds(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});
   }
   function toggleSelectAll(){
     const ids=filtered.map(s=>s.id);
-    const allSel=ids.every(id=>selectedIds.has(id));
+    const allSel=ids.length>0&&ids.every(id=>selectedIds.has(id));
     setSelectedIds(allSel?new Set():new Set(ids));
   }
   function applyBulkStatus(){
@@ -655,7 +668,13 @@ BODY:
     follow_up:suppliers.filter(s=>s.status==="follow_up").length,
     not_sent:suppliers.filter(s=>s.status==="not_sent").length,
   };
-  const filtered=filter==="all"?suppliers:suppliers.filter(s=>s.status===filter);
+  const searchLower=search.toLowerCase().trim();
+  const filtered=(filter==="all"?suppliers:suppliers.filter(s=>s.status===filter))
+    .filter(s=>!searchLower||
+      s.name.toLowerCase().includes(searchLower)||
+      (s.pocName||"").toLowerCase().includes(searchLower)||
+      (s.contact||"").toLowerCase().includes(searchLower)
+    );
   const pct=Math.round((counts.responded/Math.max(1,suppliers.length))*100);
 
   // Overall completeness across responded suppliers
@@ -725,7 +744,8 @@ BODY:
 
       {/* Supplier list */}
       <Card>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+        {/* Filter tabs + search bar */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:10}}>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
             {[["all","All"],["responded","Responded"],["sent","Sent"],["follow_up","Follow-up"],["not_sent","Not Sent"]].map(([val,label])=>(
               <button key={val} onClick={()=>{setFilter(val);setSelectedIds(new Set());}} style={{
@@ -734,9 +754,15 @@ BODY:
               }}>{label} ({val==="all"?counts.all:counts[val]??0})</button>
             ))}
           </div>
+          <div style={{position:"relative",minWidth:220}}>
+            <span style={{position:"absolute",left:9,top:"50%",transform:"translateY(-50%)",fontSize:14,color:C.textMuted,pointerEvents:"none"}}>🔍</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search supplier or PoC…"
+              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 11px 7px 30px",fontSize:13,color:C.text,outline:"none",background:C.white,boxSizing:"border-box"}}/>
+            {search&&<button onClick={()=>setSearch("")} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:C.textMuted,cursor:"pointer",fontSize:16,lineHeight:1}}>×</button>}
+          </div>
         </div>
 
-        {/* Bulk action toolbar — shown when rows are selected */}
+        {/* Bulk action toolbar */}
         {selectedIds.size>0&&(
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:C.navyLight,borderRadius:9,marginBottom:12,flexWrap:"wrap"}}>
             <span style={{fontSize:13,fontWeight:700,color:C.white}}>{selectedIds.size} selected</span>
@@ -753,143 +779,194 @@ BODY:
           </div>
         )}
 
+        {search&&<div style={{fontSize:12,color:C.textMuted,marginBottom:8}}>Showing {filtered.length} of {suppliers.length} suppliers</div>}
+
+        {/* Table — horizontally scrollable so Actions column is never hidden */}
         <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-          <thead>
-            <tr style={{borderBottom:`2px solid ${C.border}`}}>
-              <th style={{padding:"6px 10px",width:32}}>
-                <input type="checkbox"
-                  checked={filtered.length>0&&filtered.every(s=>selectedIds.has(s.id))}
-                  onChange={toggleSelectAll}
-                  style={{cursor:"pointer",accentColor:C.navy}}/>
-              </th>
-              {["Supplier","Country","Category","Contact","Status","Completeness","Notes","Actions"].map(h=>(
-                <th key={h} style={{padding:"6px 10px",textAlign:"left",color:C.textMuted,fontWeight:600,fontSize:12}}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(s=>{
-              const comp=completeness(s.name,responses,jobs,locations);
-              const isExpanded=expandedCompletion===s.id;
-              const isEditing=editingSupplier===s.id;
-              const isSelected=selectedIds.has(s.id);
-              return(
-                <React.Fragment key={s.id}>
-                  <tr style={{borderBottom:isExpanded?"none":`1px solid ${C.border}`,verticalAlign:"top",background:isSelected?"#EFF6FF":"transparent"}}>
-                    <td style={{padding:"9px 10px"}}>
-                      <input type="checkbox" checked={isSelected} onChange={()=>toggleSelect(s.id)} style={{cursor:"pointer",accentColor:C.navy}}/>
-                    </td>
-                    <td style={{padding:"9px 10px",fontWeight:600,minWidth:160}}>
-                      {isEditing?(
-                        <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                          <input value={editFields.name} onChange={e=>setEditFields(p=>({...p,name:e.target.value}))}
-                            style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:13,fontWeight:700,color:C.navy,width:"100%",boxSizing:"border-box"}}/>
-                          <input value={editFields.pocName} onChange={e=>setEditFields(p=>({...p,pocName:e.target.value}))}
-                            placeholder="PoC Name" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:11,width:"100%",boxSizing:"border-box"}}/>
-                        </div>
-                      ):(
-                        <>
-                          {s.name}
-                          {s.pocName&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>👤 {s.pocName}</div>}
-                          {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>Sent {s.sentAt}</div>}
-                          {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:1}}>Responded {s.respondedAt}</div>}
-                        </>
-                      )}
-                    </td>
-                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
-                      {isEditing?(
-                        <input value={editFields.country} onChange={e=>setEditFields(p=>({...p,country:e.target.value}))}
-                          placeholder="Country" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
-                      ):s.country||"—"}
-                    </td>
-                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
-                      {isEditing?(
-                        <input value={editFields.category} onChange={e=>setEditFields(p=>({...p,category:e.target.value}))}
-                          placeholder="Category" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
-                      ):s.category||"—"}
-                    </td>
-                    <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
-                      {isEditing?(
-                        <input value={editFields.contact} onChange={e=>setEditFields(p=>({...p,contact:e.target.value}))}
-                          placeholder="Email" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
-                      ):s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}
-                    </td>
-                    <td style={{padding:"9px 10px"}}><StatusBadge status={s.status}/></td>
-                    <td style={{padding:"9px 10px"}}>
-                      {s.status==="responded"?(
-                        <div>
-                          <CompletenessBar pct={comp.pct} filled={comp.filled} expected={comp.expected}/>
-                          {comp.missing.length>0&&(
-                            <button onClick={()=>setExpandedCompletion(isExpanded?null:s.id)}
-                              style={{background:"none",border:"none",color:C.amber,cursor:"pointer",fontSize:11,padding:"2px 0",fontWeight:600}}>
-                              {isExpanded?"▲ Hide":"▼ Show"} {comp.missing.length} missing
-                            </button>
-                          )}
-                        </div>
-                      ):<span style={{color:C.textMuted,fontSize:12}}>—</span>}
-                    </td>
-                    <td style={{padding:"9px 10px",minWidth:180}}>
-                      {editingNote===s.id?(
-                        <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                          <textarea value={noteText} onChange={e=>setNoteText(e.target.value)}
-                            placeholder="e.g. Declined to participate — rate confidentiality policy"
-                            style={{width:"100%",fontSize:11,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 7px",resize:"vertical",minHeight:60,fontFamily:"inherit",boxSizing:"border-box"}}/>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:900}}>
+            <thead>
+              <tr style={{borderBottom:`2px solid ${C.border}`}}>
+                <th style={{padding:"6px 8px",width:32}}>
+                  <input type="checkbox"
+                    checked={filtered.length>0&&filtered.every(s=>selectedIds.has(s.id))}
+                    onChange={toggleSelectAll}
+                    style={{cursor:"pointer",accentColor:C.navy}}/>
+                </th>
+                {["Supplier","Country","Category","Contact","Status","Completeness","Notes","Actions"].map(h=>(
+                  <th key={h} style={{padding:"6px 8px",textAlign:"left",color:C.textMuted,fontWeight:600,fontSize:12,whiteSpace:"nowrap"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length===0&&(
+                <tr><td colSpan={9} style={{padding:"24px 10px",textAlign:"center",color:C.textMuted,fontSize:13}}>
+                  {search?"No suppliers match your search.":"No suppliers in this filter."}
+                </td></tr>
+              )}
+              {filtered.map(s=>{
+                const comp=completeness(s.name,responses,jobs,locations);
+                const isExpanded=expandedCompletion===s.id;
+                const isEditing=editingSupplier===s.id;
+                const isSelected=selectedIds.has(s.id);
+                return(
+                  <React.Fragment key={s.id}>
+                    <tr style={{borderBottom:isExpanded?"none":`1px solid ${C.border}`,verticalAlign:"top",background:isSelected?"#EFF6FF":"transparent"}}>
+                      <td style={{padding:"9px 8px"}}>
+                        <input type="checkbox" checked={isSelected} onChange={()=>toggleSelect(s.id)} style={{cursor:"pointer",accentColor:C.navy}}/>
+                      </td>
+                      <td style={{padding:"9px 8px",fontWeight:600,minWidth:150}}>
+                        {isEditing?(
+                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                            <input value={editFields.name} onChange={e=>setEditFields(p=>({...p,name:e.target.value}))}
+                              style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:13,fontWeight:700,color:C.navy,width:"100%",boxSizing:"border-box"}}/>
+                            <input value={editFields.pocName} onChange={e=>setEditFields(p=>({...p,pocName:e.target.value}))}
+                              placeholder="PoC Name" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:11,width:"100%",boxSizing:"border-box"}}/>
+                          </div>
+                        ):(
+                          <>
+                            {s.name}
+                            {s.pocName&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>👤 {s.pocName}</div>}
+                            {s.sentAt&&<div style={{fontSize:10,color:C.textMuted,marginTop:1}}>Sent {s.sentAt}</div>}
+                            {s.respondedAt&&<div style={{fontSize:10,color:C.mint,marginTop:1}}>Responded {s.respondedAt}</div>}
+                          </>
+                        )}
+                      </td>
+                      <td style={{padding:"9px 8px",color:C.textMuted,fontSize:12,minWidth:80}}>
+                        {isEditing?(
+                          <input value={editFields.country} onChange={e=>setEditFields(p=>({...p,country:e.target.value}))}
+                            placeholder="Country" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                        ):s.country||"—"}
+                      </td>
+                      <td style={{padding:"9px 8px",color:C.textMuted,fontSize:12,minWidth:80}}>
+                        {isEditing?(
+                          <input value={editFields.category} onChange={e=>setEditFields(p=>({...p,category:e.target.value}))}
+                            placeholder="Category" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                        ):s.category||"—"}
+                      </td>
+                      <td style={{padding:"9px 8px",color:C.textMuted,fontSize:12,minWidth:160}}>
+                        {isEditing?(
+                          <input value={editFields.contact} onChange={e=>setEditFields(p=>({...p,contact:e.target.value}))}
+                            placeholder="Email" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                        ):s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}
+                      </td>
+                      <td style={{padding:"9px 8px",whiteSpace:"nowrap"}}><StatusBadge status={s.status}/></td>
+                      <td style={{padding:"9px 8px",minWidth:160}}>
+                        {s.status==="responded"?(
+                          <div>
+                            {editingCompleteness===s.id?(
+                              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                                <div style={{fontSize:11,color:C.textMuted,marginBottom:2}}>Enter % (0–100):</div>
+                                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                                  <input type="number" min={0} max={100} value={completenessInput}
+                                    onChange={e=>setCompletenessInput(e.target.value)}
+                                    style={{width:60,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:13,textAlign:"center"}}/>
+                                  <Btn size="sm" variant="mint" onClick={()=>saveManualCompleteness(s.id)}>Save</Btn>
+                                  <Btn size="sm" variant="ghost" onClick={()=>{setEditingCompleteness(null);setCompletenessInput("");}}>Cancel</Btn>
+                                </div>
+                                {s.manualCompleteness!==undefined&&(
+                                  <button onClick={()=>resetManualCompleteness(s.id)}
+                                    style={{background:"none",border:"none",color:C.textMuted,cursor:"pointer",fontSize:11,padding:"2px 0",textAlign:"left",textDecoration:"underline"}}>
+                                    Reset to calculated
+                                  </button>
+                                )}
+                              </div>
+                            ):(()=>{
+                              const useManual=s.manualCompleteness!==undefined;
+                              const pct=useManual?s.manualCompleteness:comp.pct;
+                              const filled=useManual?Math.round((s.manualCompleteness/100)*(comp.expected||1)):comp.filled;
+                              const expected=comp.expected||0;
+                              return(
+                                <div>
+                                  {useManual?(
+                                    <div style={{display:"flex",alignItems:"center",gap:6,minWidth:140}}>
+                                      <div style={{flex:1,height:7,background:C.slateLight,borderRadius:99,overflow:"hidden"}}>
+                                        <div style={{height:"100%",width:`${pct}%`,background:pct===100?C.mint:pct>=60?C.amber:C.rose,borderRadius:99}}/>
+                                      </div>
+                                      <span style={{fontSize:11,fontWeight:700,color:pct===100?C.mint:pct>=60?C.amber:C.rose,whiteSpace:"nowrap"}}>{pct}%</span>
+                                    </div>
+                                  ):(
+                                    <>
+                                      <CompletenessBar pct={comp.pct} filled={comp.filled} expected={comp.expected}/>
+                                      {comp.expected===0&&<div style={{fontSize:10,color:C.textMuted,marginTop:2}}>Add jobs &amp; locations in Template Builder</div>}
+                                      {comp.missing.length>0&&(
+                                        <button onClick={()=>setExpandedCompletion(isExpanded?null:s.id)}
+                                          style={{background:"none",border:"none",color:C.amber,cursor:"pointer",fontSize:11,padding:"2px 0",fontWeight:600}}>
+                                          {isExpanded?"▲ Hide":"▼ Show"} {comp.missing.length} missing
+                                        </button>
+                                      )}
+                                    </>
+                                  )}
+                                  <button onClick={()=>{setEditingCompleteness(s.id);setCompletenessInput(String(pct));}}
+                                    style={{background:"none",border:"none",color:C.textMuted,cursor:"pointer",fontSize:10,padding:"2px 0",display:"block",marginTop:2,textDecoration:"underline"}}>
+                                    {useManual?"✏️ Manual override active — edit":"✏️ Override completeness"}
+                                  </button>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        ):<span style={{color:C.textMuted,fontSize:12}}>—</span>}
+                      </td>
+                      <td style={{padding:"9px 8px",minWidth:160}}>
+                        {editingNote===s.id?(
+                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                            <textarea value={noteText} onChange={e=>setNoteText(e.target.value)}
+                              placeholder="e.g. Declined to participate — rate confidentiality policy"
+                              style={{width:"100%",fontSize:11,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 7px",resize:"vertical",minHeight:60,fontFamily:"inherit",boxSizing:"border-box"}}/>
+                            <div style={{display:"flex",gap:4}}>
+                              <Btn size="sm" variant="mint" onClick={()=>saveNote(s.id)}>Save</Btn>
+                              <Btn size="sm" variant="ghost" onClick={()=>setEditingNote(null)}>Cancel</Btn>
+                            </div>
+                          </div>
+                        ):(
+                          <div onClick={()=>{setEditingNote(s.id);setNoteText(s.notes||"");}}
+                            style={{cursor:"pointer",fontSize:11,color:s.notes?C.text:C.textMuted,lineHeight:1.5,
+                              padding:"4px 7px",borderRadius:6,border:`1px dashed ${s.notes?C.border:"#E2E8F0"}`,
+                              background:s.notes?C.amberLight:"transparent",minHeight:28,
+                            }}
+                            title="Click to add/edit note">
+                            {s.notes||<span style={{fontStyle:"italic"}}>Add note…</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{padding:"9px 8px",whiteSpace:"nowrap"}}>
+                        {isEditing?(
                           <div style={{display:"flex",gap:4}}>
-                            <Btn size="sm" variant="mint" onClick={()=>saveNote(s.id)}>Save</Btn>
-                            <Btn size="sm" variant="ghost" onClick={()=>setEditingNote(null)}>Cancel</Btn>
+                            <Btn size="sm" variant="mint" onClick={()=>saveEdit(s.id)}>Save</Btn>
+                            <Btn size="sm" variant="ghost" onClick={()=>setEditingSupplier(null)}>Cancel</Btn>
                           </div>
-                        </div>
-                      ):(
-                        <div onClick={()=>{setEditingNote(s.id);setNoteText(s.notes||"");}}
-                          style={{cursor:"pointer",fontSize:11,color:s.notes?C.text:C.textMuted,lineHeight:1.5,
-                            padding:"4px 7px",borderRadius:6,border:`1px dashed ${s.notes?C.border:"#E2E8F0"}`,
-                            background:s.notes?C.amberLight:"transparent",minHeight:28,
-                          }}
-                          title="Click to add/edit note">
-                          {s.notes||<span style={{fontStyle:"italic"}}>Add note…</span>}
-                        </div>
-                      )}
-                    </td>
-                    <td style={{padding:"9px 10px"}}>
-                      {isEditing?(
-                        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                          <Btn size="sm" variant="mint" onClick={()=>saveEdit(s.id)}>Save</Btn>
-                          <Btn size="sm" variant="ghost" onClick={()=>setEditingSupplier(null)}>Cancel</Btn>
-                        </div>
-                      ):(
-                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                          {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>draftEmail(s,"initial")}>Draft & Send</Btn>}
-                          {s.status==="sent"&&<Btn size="sm" variant="amber" onClick={()=>draftEmail(s,"followup")}>Follow-up</Btn>}
-                          {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>draftEmail(s,"final")}>Final Notice</Btn>}
-                          {s.status!=="responded"&&<Btn size="sm" variant="mint" onClick={()=>updateStatus(s.id,"responded")}>✓ Mark Responded</Btn>}
-                          <Btn size="sm" variant="ghost" onClick={()=>startEdit(s)} style={{color:C.sky,borderColor:C.sky}}>Edit</Btn>
-                          <button onClick={()=>removeSupplier(s.id)} title="Remove supplier"
-                            style={{background:"none",border:"none",color:C.rose,cursor:"pointer",fontSize:18,padding:"2px 4px",lineHeight:1}}>×</button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                  {isExpanded&&comp.missing.length>0&&(
-                    <tr key={s.id+"_missing"} style={{borderBottom:`1px solid ${C.border}`}}>
-                      <td colSpan={9} style={{padding:"0 10px 10px 10px"}}>
-                        <div style={{background:C.amberLight,borderRadius:8,padding:"10px 14px"}}>
-                          <div style={{fontWeight:600,fontSize:12,color:C.amber,marginBottom:6}}>Missing from {s.name}'s response:</div>
-                          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                            {comp.missing.map(m=>(
-                              <span key={m} style={{background:C.white,color:C.amber,border:`1px solid ${C.amber}44`,
-                                borderRadius:99,padding:"2px 8px",fontSize:11}}>{m}</span>
-                            ))}
+                        ):(
+                          <div style={{display:"flex",gap:4,flexWrap:"nowrap",alignItems:"center"}}>
+                            {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>draftEmail(s,"initial")}>Draft &amp; Send</Btn>}
+                            {s.status==="sent"&&<Btn size="sm" variant="amber" onClick={()=>draftEmail(s,"followup")}>Follow-up</Btn>}
+                            {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>draftEmail(s,"final")}>Final Notice</Btn>}
+                            {s.status!=="responded"&&<Btn size="sm" variant="mint" onClick={()=>updateStatus(s.id,"responded")}>✓ Responded</Btn>}
+                            <Btn size="sm" variant="ghost" onClick={()=>startEdit(s)} style={{color:C.sky,borderColor:C.sky}}>Edit</Btn>
+                            <button onClick={()=>removeSupplier(s.id)} title="Remove supplier"
+                              style={{background:"none",border:"none",color:C.rose,cursor:"pointer",fontSize:18,padding:"2px 4px",lineHeight:1,flexShrink:0}}>×</button>
                           </div>
-                        </div>
+                        )}
                       </td>
                     </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+                    {isExpanded&&comp.missing.length>0&&(
+                      <tr key={s.id+"_missing"} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td colSpan={9} style={{padding:"0 10px 10px 10px"}}>
+                          <div style={{background:C.amberLight,borderRadius:8,padding:"10px 14px"}}>
+                            <div style={{fontWeight:600,fontSize:12,color:C.amber,marginBottom:6}}>Missing from {s.name}'s response:</div>
+                            <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                              {comp.missing.map(m=>(
+                                <span key={m} style={{background:C.white,color:C.amber,border:`1px solid ${C.amber}44`,
+                                  borderRadius:99,padding:"2px 8px",fontSize:11}}>{m}</span>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </Card>
 
@@ -1014,7 +1091,6 @@ function DataEntry({responses,setResponses,suppliers,setSuppliers}){
 
   function confirmImport(){
     setResponses(p=>[...p,...preview]);
-    // Auto-mark this supplier as responded in the Supplier Tracker
     const now=new Date().toISOString().split("T")[0];
     setSuppliers(p=>p.map(s=>
       s.name===selectedSupplier&&s.status!=="responded"
@@ -1492,12 +1568,13 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
           </div>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,marginLeft:12}}>
-          <Btn size="sm" variant={isActive?"ghost":"sky"} onClick={e=>{e.stopPropagation();onSelect(p.id);}}>
+          {/* Fix: use ghostLight on active (dark) rows so text is visible */}
+          <Btn size="sm" variant={isActive?"ghostLight":"sky"} onClick={e=>{e.stopPropagation();onSelect(p.id);}}>
             {isActive?"✓ Active":"Open"}
           </Btn>
           {!isArch&&(
             <button onClick={e=>{e.stopPropagation();if(window.confirm("Close this survey? All data stays saved — you can reopen it anytime."))onArchive(p.id,true);}}
-              style={{background:"none",border:`1px solid ${C.border}`,borderRadius:7,color:C.textMuted,cursor:"pointer",fontSize:12,padding:"4px 10px",fontWeight:600}}>Close</button>
+              style={{background:"none",border:`1px solid ${isActive?"rgba(255,255,255,.4)":C.border}`,borderRadius:7,color:isActive?C.white:C.textMuted,cursor:"pointer",fontSize:12,padding:"4px 10px",fontWeight:600}}>Close</button>
           )}
           {isArch&&(
             <button onClick={e=>{e.stopPropagation();onArchive(p.id,false);}}
@@ -1579,7 +1656,7 @@ const TABS=[
 
 export default function App(){
   const [tab,setTab]=useState("template");
-  const [showProjects,setShowProjects]=useState(false);
+  const [showProjects,setShowProjects]=useState(true);
 
   // ── Bootstrap from localStorage ──
   const [store,setStoreRaw]=useState(()=>lsLoad());
