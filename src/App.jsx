@@ -477,10 +477,10 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [expandedCompletion,setExpandedCompletion]=useState(null);
   const [editingNote,setEditingNote]=useState(null);
   const [noteText,setNoteText]=useState("");
-  // Editing supplier inline
-  const [editingSupplier,setEditingSupplier]=useState(null); // supplier id
+  // Inline edit state
+  const [editingSupplier,setEditingSupplier]=useState(null);
   const [editFields,setEditFields]=useState({});
-  // Bulk selection
+  // Bulk selection state
   const [selectedIds,setSelectedIds]=useState(new Set());
   const [bulkStatus,setBulkStatus]=useState("sent");
 
@@ -498,22 +498,17 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     setEditingSupplier(null);
   }
   function removeSupplier(id){
-    if(!window.confirm("Remove this supplier from the list? Their response data will remain in Data Entry."))return;
+    if(!window.confirm("Remove this supplier from the list? Their response data in Data Entry will remain."))return;
     setSuppliers(p=>p.filter(s=>s.id!==id));
   }
 
   function toggleSelect(id){
-    setSelectedIds(prev=>{
-      const next=new Set(prev);
-      next.has(id)?next.delete(id):next.add(id);
-      return next;
-    });
+    setSelectedIds(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});
   }
   function toggleSelectAll(){
-    const visibleIds=filtered.map(s=>s.id);
-    const allSelected=visibleIds.every(id=>selectedIds.has(id));
-    if(allSelected) setSelectedIds(new Set());
-    else setSelectedIds(new Set(visibleIds));
+    const ids=filtered.map(s=>s.id);
+    const allSel=ids.every(id=>selectedIds.has(id));
+    setSelectedIds(allSel?new Set():new Set(ids));
   }
   function applyBulkStatus(){
     if(!selectedIds.size)return;
@@ -741,7 +736,7 @@ BODY:
           </div>
         </div>
 
-        {/* Bulk action toolbar — shown when something is selected */}
+        {/* Bulk action toolbar — shown when rows are selected */}
         {selectedIds.size>0&&(
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:C.navyLight,borderRadius:9,marginBottom:12,flexWrap:"wrap"}}>
             <span style={{fontSize:13,fontWeight:700,color:C.white}}>{selectedIds.size} selected</span>
@@ -763,8 +758,10 @@ BODY:
           <thead>
             <tr style={{borderBottom:`2px solid ${C.border}`}}>
               <th style={{padding:"6px 10px",width:32}}>
-                <input type="checkbox" checked={filtered.length>0&&filtered.every(s=>selectedIds.has(s.id))}
-                  onChange={toggleSelectAll} style={{cursor:"pointer",accentColor:C.navy}}/>
+                <input type="checkbox"
+                  checked={filtered.length>0&&filtered.every(s=>selectedIds.has(s.id))}
+                  onChange={toggleSelectAll}
+                  style={{cursor:"pointer",accentColor:C.navy}}/>
               </th>
               {["Supplier","Country","Category","Contact","Status","Completeness","Notes","Actions"].map(h=>(
                 <th key={h} style={{padding:"6px 10px",textAlign:"left",color:C.textMuted,fontWeight:600,fontSize:12}}>{h}</th>
@@ -815,7 +812,7 @@ BODY:
                     <td style={{padding:"9px 10px",color:C.textMuted,fontSize:12}}>
                       {isEditing?(
                         <input value={editFields.contact} onChange={e=>setEditFields(p=>({...p,contact:e.target.value}))}
-                          placeholder="Email address" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
+                          placeholder="Email" style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 7px",fontSize:12,width:"100%",boxSizing:"border-box"}}/>
                       ):s.contact||<span style={{color:C.rose,fontSize:11}}>No email</span>}
                     </td>
                     <td style={{padding:"9px 10px"}}><StatusBadge status={s.status}/></td>
@@ -867,9 +864,8 @@ BODY:
                           {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>draftEmail(s,"final")}>Final Notice</Btn>}
                           {s.status!=="responded"&&<Btn size="sm" variant="mint" onClick={()=>updateStatus(s.id,"responded")}>✓ Mark Responded</Btn>}
                           <Btn size="sm" variant="ghost" onClick={()=>startEdit(s)} style={{color:C.sky,borderColor:C.sky}}>Edit</Btn>
-                          <button onClick={()=>removeSupplier(s.id)}
-                            title="Remove supplier"
-                            style={{background:"none",border:"none",color:C.rose,cursor:"pointer",fontSize:16,padding:"2px 4px",lineHeight:1}}>×</button>
+                          <button onClick={()=>removeSupplier(s.id)} title="Remove supplier"
+                            style={{background:"none",border:"none",color:C.rose,cursor:"pointer",fontSize:18,padding:"2px 4px",lineHeight:1}}>×</button>
                         </div>
                       )}
                     </td>
@@ -1018,13 +1014,14 @@ function DataEntry({responses,setResponses,suppliers,setSuppliers}){
 
   function confirmImport(){
     setResponses(p=>[...p,...preview]);
-    // Auto-mark supplier as responded in the tracker
+    // Auto-mark this supplier as responded in the Supplier Tracker
     const now=new Date().toISOString().split("T")[0];
-    setSuppliers(p=>p.map(s=>s.name===selectedSupplier&&s.status!=="responded"
-      ?{...s,status:"responded",respondedAt:s.respondedAt||now}
-      :s
+    setSuppliers(p=>p.map(s=>
+      s.name===selectedSupplier&&s.status!=="responded"
+        ?{...s,status:"responded",respondedAt:s.respondedAt||now}
+        :s
     ));
-    setImportMsg(`✅ Imported ${preview.length} records from ${selectedSupplier} — supplier marked as Responded`);
+    setImportMsg(`✅ Imported ${preview.length} records from ${selectedSupplier} — marked as Responded in Tracker`);
     setPreview([]);
   }
   function addManual(){
@@ -1483,7 +1480,6 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
         background:isActive?C.navy:isArch?"#F8FAFC":C.slateLight,
         borderRadius:9,padding:"12px 16px",
         border:isArch?`1px dashed ${C.border}`:"none",
-        transition:"background .15s",
       }}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -1496,21 +1492,18 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
           </div>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,marginLeft:12}}>
-          <Btn size="sm" variant={isActive?"ghost":"sky"} onClick={()=>onSelect(p.id)}>
+          <Btn size="sm" variant={isActive?"ghost":"sky"} onClick={e=>{e.stopPropagation();onSelect(p.id);}}>
             {isActive?"✓ Active":"Open"}
           </Btn>
           {!isArch&&(
-            <button onClick={e=>{e.stopPropagation();if(window.confirm("Close this survey? The data stays saved and you can reopen it anytime."))onArchive(p.id,true);}}
-              title="Close survey (keeps all data)"
+            <button onClick={e=>{e.stopPropagation();if(window.confirm("Close this survey? All data stays saved — you can reopen it anytime."))onArchive(p.id,true);}}
               style={{background:"none",border:`1px solid ${C.border}`,borderRadius:7,color:C.textMuted,cursor:"pointer",fontSize:12,padding:"4px 10px",fontWeight:600}}>Close</button>
           )}
           {isArch&&(
             <button onClick={e=>{e.stopPropagation();onArchive(p.id,false);}}
-              title="Reopen this survey"
               style={{background:"none",border:`1px solid ${C.mint}`,borderRadius:7,color:C.mint,cursor:"pointer",fontSize:12,padding:"4px 10px",fontWeight:600}}>Reopen</button>
           )}
           <button onClick={e=>{e.stopPropagation();if(window.confirm("Permanently delete this project and all its data? This cannot be undone."))onDelete(p.id);}}
-            title="Delete permanently"
             style={{background:"none",border:"none",color:isActive?"#FC8181":C.rose,cursor:"pointer",fontSize:18,padding:"2px 6px",lineHeight:1}}>×</button>
         </div>
       </div>
@@ -1553,17 +1546,16 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
           ):(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               {active.length===0&&(
-                <div style={{textAlign:"center",padding:"20px 0",color:C.textMuted,fontSize:13}}>No active surveys — create one above or reopen a closed one below.</div>
+                <div style={{textAlign:"center",padding:"16px 0",color:C.textMuted,fontSize:13}}>No active surveys — create one above or reopen a closed one below.</div>
               )}
               {active.map(p=><ProjectRow key={p.id} p={p}/>)}
-
               {archived.length>0&&(
-                <div style={{marginTop:8}}>
-                  <button onClick={()=>setShowArchived(!showArchived)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,color:C.textMuted,display:"flex",alignItems:"center",gap:5,padding:"4px 0"}}>
+                <div style={{marginTop:4}}>
+                  <button onClick={()=>setShowArchived(!showArchived)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,color:C.textMuted,display:"flex",alignItems:"center",gap:5,padding:"6px 0"}}>
                     {showArchived?"▲":"▼"} {archived.length} closed survey{archived.length!==1?"s":""}
                   </button>
                   {showArchived&&(
-                    <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8}}>
+                    <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:6}}>
                       {archived.map(p=><ProjectRow key={p.id} p={p}/>)}
                     </div>
                   )}
@@ -1681,7 +1673,9 @@ export default function App(){
   function handleArchiveProject(pid,archived){
     setStore(prev=>({
       ...prev,
-      projects:(prev.projects||[]).map(p=>p.id===pid?{...p,archived,archived_at:archived?new Date().toISOString():null}:p),
+      projects:(prev.projects||[]).map(p=>p.id===pid
+        ?{...p,archived,archived_at:archived?new Date().toISOString():null}
+        :p),
     }));
   }
 
