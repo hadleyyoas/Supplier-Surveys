@@ -186,6 +186,25 @@ async function sendOutlookEmail(toEmail, subject, body){
   return true;
 }
 
+
+// ─── DUAL SCROLL WRAPPER ─────────────────────────────────────────────────────
+function DualScroll({children}){
+  const top=React.useRef(null);
+  const bot=React.useRef(null);
+  function syncTop(){if(bot.current)bot.current.scrollLeft=top.current.scrollLeft;}
+  function syncBot(){if(top.current)top.current.scrollLeft=bot.current.scrollLeft;}
+  return(
+    <div>
+      <div ref={top} onScroll={syncTop} style={{overflowX:"auto",overflowY:"hidden",marginBottom:2}}>
+        <div style={{height:1,minWidth:900}}/>
+      </div>
+      <div ref={bot} onScroll={syncBot} style={{overflowX:"auto"}}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // ─── TEMPLATE BUILDER ────────────────────────────────────────────────────────
 function TemplateBuilder({jobs,setJobs,locations,setLocations,clientName}){
   const [newTitle,setNewTitle]=useState("");
@@ -469,23 +488,14 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
   const [newEmail,setNewEmail]=useState("");
   const [filter,setFilter]=useState("all");
   const [search,setSearch]=useState("");
-  const [draftInfo,setDraftInfo]=useState(null);
-  const [draft,setDraft]=useState("");
-  const [draftSubject,setDraftSubject]=useState("");
-  const [drafting,setDrafting]=useState(false);
-  const [sending,setSending]=useState(false);
-  const [sendStatus,setSendStatus]=useState({});
   const [importMsg,setImportMsg]=useState("");
   const [expandedCompletion,setExpandedCompletion]=useState(null);
   const [editingNote,setEditingNote]=useState(null);
   const [noteText,setNoteText]=useState("");
-  // Inline edit
   const [editingSupplier,setEditingSupplier]=useState(null);
   const [editFields,setEditFields]=useState({});
-  // Bulk selection
   const [selectedIds,setSelectedIds]=useState(new Set());
   const [bulkStatus,setBulkStatus]=useState("sent");
-  // Manual completeness override
   const [editingCompleteness,setEditingCompleteness]=useState(null);
   const [completenessInput,setCompletenessInput]=useState("");
 
@@ -501,18 +511,8 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     setSuppliers(p=>p.map(s=>s.id===id?{...s,...editFields}:s));
     setEditingSupplier(null);
   }
-  function saveManualCompleteness(id){
-    const val=parseInt(completenessInput,10);
-    if(isNaN(val)||val<0||val>100)return;
-    setSuppliers(p=>p.map(s=>s.id===id?{...s,manualCompleteness:val}:s));
-    setEditingCompleteness(null);setCompletenessInput("");
-  }
-  function resetManualCompleteness(id){
-    setSuppliers(p=>p.map(s=>s.id===id?{...s,manualCompleteness:undefined}:s));
-    setEditingCompleteness(null);setCompletenessInput("");
-  }
   function removeSupplier(id){
-    if(!window.confirm("Remove this supplier from the list? Their response data in Data Entry will remain."))return;
+    if(!window.confirm("Remove this supplier? Their response data in Data Entry will remain."))return;
     setSuppliers(p=>p.filter(s=>s.id!==id));
   }
   function toggleSelect(id){
@@ -533,7 +533,16 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     }:s));
     setSelectedIds(new Set());
   }
-
+  function saveManualCompleteness(id){
+    const val=parseInt(completenessInput,10);
+    if(isNaN(val)||val<0||val>100)return;
+    setSuppliers(p=>p.map(s=>s.id===id?{...s,manualCompleteness:val}:s));
+    setEditingCompleteness(null);setCompletenessInput("");
+  }
+  function resetManualCompleteness(id){
+    setSuppliers(p=>p.map(s=>s.id===id?{...s,manualCompleteness:undefined}:s));
+    setEditingCompleteness(null);setCompletenessInput("");
+  }
   function addSupplier(){
     if(!newName.trim())return;
     setSuppliers(p=>[...p,{id:Date.now(),name:newName.trim(),contact:newEmail.trim(),pocName:"",country:"",category:"",status:"not_sent",notes:"",sentAt:null,respondedAt:null}]);
@@ -554,20 +563,13 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
     reader.onload=e=>{
       try{
         const wb=XLSX.read(e.target.result,{type:"binary"});
-
-        // Prefer "Consolidated Supplier List" sheet, fall back to first sheet
-        const sheetName = wb.SheetNames.find(n=>
-          n.toLowerCase().includes("consolidated")||n.toLowerCase().includes("supplier list")
-        ) || wb.SheetNames[0];
+        const sheetName=wb.SheetNames.find(n=>n.toLowerCase().includes("consolidated")||n.toLowerCase().includes("supplier list"))||wb.SheetNames[0];
         const ws=wb.Sheets[sheetName];
         const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-
-        // Scan up to row 10 to find header (skips KellyOCG banner rows)
         let cols={name:-1,email:-1,contact:-1,country:-1,category:-1};
         let hr=-1;
         for(let r=0;r<Math.min(10,rows.length);r++){
           const row=rows[r].map(v=>String(v).toLowerCase().trim());
-          // Look for "supplier" column
           const ni=row.findIndex(c=>c==="supplier"||c.includes("supplier name")||c.includes("vendor")||c.includes("company"));
           if(ni>=0){
             cols.name=ni;
@@ -575,11 +577,10 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
             cols.contact=row.findIndex(c=>c.includes("point of contact")||c.includes("poc name")||c.includes("contact name")||c.includes("contact (poc)"));
             cols.country=row.findIndex(c=>c.includes("country"));
             cols.category=row.findIndex(c=>c.includes("category")||c.includes("collar")||c.includes("type"));
-            hr=r; break;
+            hr=r;break;
           }
         }
-        if(cols.name<0){setImportMsg("⚠️ Couldn't find a Supplier column. Make sure you're using the Consolidated Supplier List sheet.");return;}
-
+        if(cols.name<0){setImportMsg("⚠️ Couldn't find a Supplier column.");return;}
         const imported=[];
         const seenNames=new Set();
         for(let r=hr+1;r<rows.length;r++){
@@ -587,14 +588,14 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
           const name=String(row[cols.name]||"").trim();
           if(!name||seenNames.has(name.toLowerCase()))continue;
           seenNames.add(name.toLowerCase());
-          const email=cols.email>=0?String(row[cols.email]||"").trim():"";
-          const pocName=cols.contact>=0?String(row[cols.contact]||"").trim():"";
-          const country=cols.country>=0?String(row[cols.country]||"").trim():"";
-          const category=cols.category>=0?String(row[cols.category]||"").trim():"";
           imported.push({
             id:Date.now()+r+Math.random(),
-            name, contact:email, pocName, country, category,
-            status:"not_sent", notes:"", sentAt:null, respondedAt:null
+            name,
+            contact:cols.email>=0?String(row[cols.email]||"").trim():"",
+            pocName:cols.contact>=0?String(row[cols.contact]||"").trim():"",
+            country:cols.country>=0?String(row[cols.country]||"").trim():"",
+            category:cols.category>=0?String(row[cols.category]||"").trim():"",
+            status:"not_sent",notes:"",sentAt:null,respondedAt:null
           });
         }
         if(!imported.length){setImportMsg("⚠️ No supplier rows found.");return;}
@@ -607,58 +608,6 @@ function SupplierTracker({suppliers,setSuppliers,responses,jobs,locations}){
       }catch(err){setImportMsg("⚠️ Error reading file: "+err.message);}
     };
     reader.readAsBinaryString(file);
-  }
-
-  async function draftEmail(supplier,type){
-    setDraftInfo({supplier,type});setDrafting(true);setDraft("");setDraftSubject("");
-    const roleList = jobs.map(j=>`${j.title} - ${j.level}`).join(", ");
-    const locList = locations.join(", ");
-    const prompts={
-      initial:`Write a professional initial outreach email to staffing supplier ${supplier.name} asking them to complete a rate survey for hourly bill and pay rates.
-Roles to survey: ${roleList}.
-Locations: ${locList}.
-Keep it warm and concise. The sender is Hadley Yoas from Kelly Services.
-Return in this exact format:
-SUBJECT: [subject line here]
-BODY:
-[email body here]`,
-      followup:`Write a brief friendly follow-up email to ${supplier.name} who hasn't yet responded to our rate survey. Not pushy. Sender is Hadley Yoas from Kelly Services.
-Return:
-SUBJECT: [subject line]
-BODY:
-[body]`,
-      final:`Write a final notice email to ${supplier.name} — rate survey closes in 48 hours. Polite urgency. Sender is Hadley Yoas from Kelly Services.
-Return:
-SUBJECT: [subject line]
-BODY:
-[body]`,
-    };
-    try{
-      const text = await callClaude(prompts[type], 800);
-      const subjectMatch = text.match(/SUBJECT:\s*(.+)/);
-      const bodyMatch = text.match(/BODY:\s*([\s\S]+)/);
-      setDraftSubject(subjectMatch?subjectMatch[1].trim():"Rate Survey Request");
-      setDraft(bodyMatch?bodyMatch[1].trim():text);
-    }catch{setDraft("Error generating email.");}
-    setDrafting(false);
-  }
-
-  async function sendEmail(supplier){
-    if(!supplier.contact){
-      setSendStatus(p=>({...p,[supplier.id]:"⚠️ No email address on file for this supplier."}));
-      return;
-    }
-    setSending(true);
-    setSendStatus(p=>({...p,[supplier.id]:"📨 Sending…"}));
-    try{
-      await sendOutlookEmail(supplier.contact, draftSubject, draft);
-      setSendStatus(p=>({...p,[supplier.id]:`✅ Sent to ${supplier.contact}`}));
-      updateStatus(supplier.id, draftInfo.type==="initial"?"sent":draftInfo.type==="followup"?"follow_up":supplier.status);
-      setTimeout(()=>setDraftInfo(null),1500);
-    }catch(err){
-      setSendStatus(p=>({...p,[supplier.id]:`⚠️ Send failed — check your Microsoft 365 connection. (${err.message})`}));
-    }
-    setSending(false);
   }
 
   const counts={
@@ -676,8 +625,6 @@ BODY:
       (s.contact||"").toLowerCase().includes(searchLower)
     );
   const pct=Math.round((counts.responded/Math.max(1,suppliers.length))*100);
-
-  // Overall completeness across responded suppliers
   const respondedSuppliers=suppliers.filter(s=>s.status==="responded");
   const fullyComplete=respondedSuppliers.filter(s=>completeness(s.name,responses,jobs,locations).pct===100).length;
   const partialCount=respondedSuppliers.length-fullyComplete;
@@ -714,17 +661,6 @@ BODY:
         </div>
       </Card>
 
-      {/* Outlook sender badge */}
-      <Card style={{padding:"12px 20px",background:C.purpleLight,border:`1px solid #DDD6FE`}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:20}}>📧</span>
-          <div>
-            <div style={{fontWeight:700,fontSize:13,color:C.purple}}>Outlook Connected</div>
-            <div style={{fontSize:12,color:C.slate}}>Emails will be sent from <strong>{SENDER_EMAIL}</strong> via your Microsoft 365 account</div>
-          </div>
-        </div>
-      </Card>
-
       {/* Import */}
       <Card>
         <div style={{fontWeight:700,fontSize:14,color:C.navy,marginBottom:10}}>📥 Import Supplier List</div>
@@ -744,7 +680,7 @@ BODY:
 
       {/* Supplier list */}
       <Card>
-        {/* Filter tabs + search bar */}
+        {/* Filter tabs + search */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:10}}>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
             {[["all","All"],["responded","Responded"],["sent","Sent"],["follow_up","Follow-up"],["not_sent","Not Sent"]].map(([val,label])=>(
@@ -781,8 +717,8 @@ BODY:
 
         {search&&<div style={{fontSize:12,color:C.textMuted,marginBottom:8}}>Showing {filtered.length} of {suppliers.length} suppliers</div>}
 
-        {/* Table — horizontally scrollable so Actions column is never hidden */}
-        <div style={{overflowX:"auto"}}>
+        {/* DualScroll: scrollbar appears at top AND bottom */}
+        <DualScroll>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:900}}>
             <thead>
               <tr style={{borderBottom:`2px solid ${C.border}`}}>
@@ -873,8 +809,6 @@ BODY:
                             ):(()=>{
                               const useManual=s.manualCompleteness!==undefined;
                               const pct=useManual?s.manualCompleteness:comp.pct;
-                              const filled=useManual?Math.round((s.manualCompleteness/100)*(comp.expected||1)):comp.filled;
-                              const expected=comp.expected||0;
                               return(
                                 <div>
                                   {useManual?(
@@ -936,9 +870,9 @@ BODY:
                           </div>
                         ):(
                           <div style={{display:"flex",gap:4,flexWrap:"nowrap",alignItems:"center"}}>
-                            {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>draftEmail(s,"initial")}>Draft &amp; Send</Btn>}
-                            {s.status==="sent"&&<Btn size="sm" variant="amber" onClick={()=>draftEmail(s,"followup")}>Follow-up</Btn>}
-                            {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>draftEmail(s,"final")}>Final Notice</Btn>}
+                            {s.status==="not_sent"&&<Btn size="sm" variant="sky" onClick={()=>updateStatus(s.id,"sent")}>Mark Sent</Btn>}
+                            {s.status==="sent"&&<Btn size="sm" variant="amber" onClick={()=>updateStatus(s.id,"follow_up")}>Follow-up</Btn>}
+                            {s.status==="follow_up"&&<Btn size="sm" variant="danger" onClick={()=>updateStatus(s.id,"sent")}>Re-sent</Btn>}
                             {s.status!=="responded"&&<Btn size="sm" variant="mint" onClick={()=>updateStatus(s.id,"responded")}>✓ Responded</Btn>}
                             <Btn size="sm" variant="ghost" onClick={()=>startEdit(s)} style={{color:C.sky,borderColor:C.sky}}>Edit</Btn>
                             <button onClick={()=>removeSupplier(s.id)} title="Remove supplier"
@@ -967,45 +901,8 @@ BODY:
               })}
             </tbody>
           </table>
-        </div>
+        </DualScroll>
       </Card>
-
-      {/* Email draft panel */}
-      {draftInfo&&(
-        <Card style={{border:`2px solid ${C.purple}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-            <div>
-              <div style={{fontWeight:700,color:C.navy,fontSize:15}}>
-                ✉️ {draftInfo.type==="initial"?"Initial Outreach":draftInfo.type==="followup"?"Follow-up":"Final Notice"} → {draftInfo.supplier.name}
-              </div>
-              <div style={{fontSize:12,color:C.textMuted,marginTop:2}}>Sending from {SENDER_EMAIL}</div>
-            </div>
-            <Btn size="sm" variant="ghost" onClick={()=>setDraftInfo(null)}>Dismiss</Btn>
-          </div>
-
-          {drafting?(
-            <div style={{color:C.textMuted,fontSize:13,padding:"24px 0",textAlign:"center"}}>Generating email draft…</div>
-          ):(
-            <>
-              <Input label="Subject" value={draftSubject} onChange={setDraftSubject} style={{marginBottom:10}}/>
-              <div style={{fontSize:12,fontWeight:600,color:C.textMuted,marginBottom:4}}>Body</div>
-              <textarea value={draft} onChange={e=>setDraft(e.target.value)}
-                style={{width:"100%",minHeight:220,border:`1px solid ${C.border}`,borderRadius:8,padding:12,fontSize:13,lineHeight:1.6,color:C.text,resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
-              <Toast msg={sendStatus[draftInfo.supplier.id]}/>
-              <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
-                <Btn variant="purple" onClick={()=>sendEmail(draftInfo.supplier)} disabled={sending||!draft.trim()}>
-                  {sending?"Sending…":"📧 Send via Outlook"}
-                </Btn>
-                <Btn size="sm" variant="ghost" onClick={()=>navigator.clipboard?.writeText(draft)}>Copy to Clipboard</Btn>
-                <Btn size="sm" variant="ghost" onClick={()=>setDraftInfo(null)}>Close</Btn>
-                {!draftInfo.supplier.contact&&(
-                  <span style={{fontSize:12,color:C.rose,marginLeft:4}}>⚠️ No email address — update the supplier contact before sending.</span>
-                )}
-              </div>
-            </>
-          )}
-        </Card>
-      )}
     </div>
   );
 }
@@ -1568,7 +1465,6 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
           </div>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,marginLeft:12}}>
-          {/* Fix: use ghostLight on active (dark) rows so text is visible */}
           <Btn size="sm" variant={isActive?"ghostLight":"sky"} onClick={e=>{e.stopPropagation();onSelect(p.id);}}>
             {isActive?"✓ Active":"Open"}
           </Btn>
@@ -1595,13 +1491,11 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
           <div style={{fontSize:24,fontWeight:800,color:C.navy,letterSpacing:-0.5}}>SupplierRate</div>
           <div style={{fontSize:14,color:C.textMuted,marginTop:4}}>Rate Survey Management · Kelly Services MRA</div>
         </div>
-
         <Card>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
             <div style={{fontWeight:700,fontSize:16,color:C.navy}}>Your Survey Projects</div>
             <Btn variant="sky" size="sm" onClick={()=>setCreating(!creating)}>+ New Project</Btn>
           </div>
-
           {creating&&(
             <div style={{background:C.skyLight,borderRadius:10,padding:16,marginBottom:16,display:"flex",flexDirection:"column",gap:10}}>
               <Input label="Project Name" value={newName} onChange={setNewName} placeholder="e.g. Intel Q3 2026 Rate Survey"/>
@@ -1612,9 +1506,8 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
               </div>
             </div>
           )}
-
           {loading?(
-            <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>Loading projects…</div>
+            <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>Loading…</div>
           ):active.length===0&&archived.length===0?(
             <div style={{textAlign:"center",padding:"32px 0",color:C.textMuted,fontSize:14}}>
               <div style={{fontSize:32,marginBottom:8}}>📁</div>
@@ -1622,20 +1515,14 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
             </div>
           ):(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {active.length===0&&(
-                <div style={{textAlign:"center",padding:"16px 0",color:C.textMuted,fontSize:13}}>No active surveys — create one above or reopen a closed one below.</div>
-              )}
+              {active.length===0&&<div style={{textAlign:"center",padding:"16px 0",color:C.textMuted,fontSize:13}}>No active surveys — create one above or reopen a closed one below.</div>}
               {active.map(p=><ProjectRow key={p.id} p={p}/>)}
               {archived.length>0&&(
                 <div style={{marginTop:4}}>
                   <button onClick={()=>setShowArchived(!showArchived)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,color:C.textMuted,display:"flex",alignItems:"center",gap:5,padding:"6px 0"}}>
                     {showArchived?"▲":"▼"} {archived.length} closed survey{archived.length!==1?"s":""}
                   </button>
-                  {showArchived&&(
-                    <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:6}}>
-                      {archived.map(p=><ProjectRow key={p.id} p={p}/>)}
-                    </div>
-                  )}
+                  {showArchived&&<div style={{display:"flex",flexDirection:"column",gap:6,marginTop:6}}>{archived.map(p=><ProjectRow key={p.id} p={p}/>)}</div>}
                 </div>
               )}
             </div>
@@ -1645,6 +1532,7 @@ function ProjectSelector({projects,activeId,onSelect,onCreate,onDelete,onArchive
     </div>
   );
 }
+
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 const TABS=[
